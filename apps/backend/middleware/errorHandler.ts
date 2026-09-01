@@ -1,5 +1,5 @@
 import type { Request,NextFunction, RequestHandler, Response } from "express";
-import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { Prisma } from "db/client";
 import { ZodError } from "zod";
 
 /** Wrap async route handlers so thrown/rejected errors reach the error middleware. */
@@ -18,7 +18,7 @@ export function errorHandler(
     return res.status(400).json({ error: "Validation failed", issues: err.flatten() });
   }
 
-  if (err instanceof PrismaClientKnownRequestError) {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
     if (err.code === "P2002") {
       return res.status(409).json({ error: "A record with these unique fields already exists" });
     }

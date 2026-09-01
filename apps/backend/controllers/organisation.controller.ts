@@ -38,9 +38,13 @@ export async function listMyOrganisations(req: AuthedRequest, res: Response) {
   res.json(memberships.map((m: { organisation: any; role: any; }) => ({ ...m.organisation, myRole: m.role })));
 }
 
+const orgIdParamSchema = z.object({ orgId: z.string().uuid() });
+const memberIdParamSchema = z.object({ memberId: z.string().uuid() });
+
 export async function getOrganisation(req: AuthedRequest, res: Response) {
+  const { orgId } = orgIdParamSchema.parse(req.params);
   const org = await prisma.organisation.findUnique({
-    where: { id: req.params.orgId },
+    where: { id: orgId },
     include: {
       members: { include: { user: true } },
       teams: true,
@@ -54,16 +58,18 @@ export async function getOrganisation(req: AuthedRequest, res: Response) {
 const updateOrgSchema = createOrgSchema.partial();
 
 export async function updateOrganisation(req: AuthedRequest, res: Response) {
+  const { orgId } = orgIdParamSchema.parse(req.params);
   const body = updateOrgSchema.parse(req.body);
   const org = await prisma.organisation.update({
-    where: { id: req.params.orgId },
+    where: { id: orgId },
     data: body,
   });
   res.json(org);
 }
 
 export async function deleteOrganisation(req: AuthedRequest, res: Response) {
-  await prisma.organisation.delete({ where: { id: req.params.orgId } });
+  const { orgId } = orgIdParamSchema.parse(req.params);
+  await prisma.organisation.delete({ where: { id: orgId } });
   res.status(204).send();
 }
 
@@ -73,9 +79,10 @@ const addMemberSchema = z.object({
 });
 
 export async function addOrganisationMember(req: AuthedRequest, res: Response) {
+  const { orgId } = orgIdParamSchema.parse(req.params);
   const body = addMemberSchema.parse(req.body);
   const member = await prisma.organisationMember.create({
-    data: { organisationId: req.params.orgId, userId: body.userId, role: body.role },
+    data: { organisationId: orgId, userId: body.userId, role: body.role },
     include: { user: true },
   });
   res.status(201).json(member);
@@ -84,15 +91,17 @@ export async function addOrganisationMember(req: AuthedRequest, res: Response) {
 const updateRoleSchema = z.object({ role: z.enum(["OWNER", "ADMIN", "MEMBER"]) });
 
 export async function updateMemberRole(req: AuthedRequest, res: Response) {
+  const { memberId } = memberIdParamSchema.parse(req.params);
   const body = updateRoleSchema.parse(req.body);
   const member = await prisma.organisationMember.update({
-    where: { id: req.params.memberId },
+    where: { id: memberId },
     data: { role: body.role },
   });
   res.json(member);
 }
 
 export async function removeOrganisationMember(req: AuthedRequest, res: Response) {
-  await prisma.organisationMember.delete({ where: { id: req.params.memberId } });
+  const { memberId } = memberIdParamSchema.parse(req.params);
+  await prisma.organisationMember.delete({ where: { id: memberId } });
   res.status(204).send();
 }

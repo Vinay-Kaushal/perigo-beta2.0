@@ -21,13 +21,18 @@ const boardSchema = z.object({
 export async function createBoard(req: AuthedRequest, res: Response) {
   const body = boardSchema.parse(req.body);
   const orgMembership = (req as any).membership;
+  const orgId = req.params.orgId;
+
+  if (!orgId) {
+    return res.status(400).json({ error: "Organisation ID is required" });
+  }
 
   const board = await prisma.board.create({
     data: {
       name: body.name,
       description: body.description,
       teamId: body.teamId,
-      organisationId: req.params.orgId,
+      organisationId: orgId,
       members: { create: { organisationMemberId: orgMembership.id } },
       // Every board ships with a default swimlane set (Trello/Jira-style)
       // so the frontend never has to render an empty board with no columns.
@@ -82,12 +87,18 @@ const addBoardMemberSchema = z.object({ organisationMemberId: z.string().uuid() 
 
 export async function addBoardMember(req: AuthedRequest, res: Response) {
   const body = addBoardMemberSchema.parse(req.body);
+  const boardId = req.params.boardId;
+
+  if (!boardId) {
+    return res.status(400).json({ error: "Board ID is required" });
+  }
+
   const member = await prisma.boardMember.create({
-    data: { boardId: req.params.boardId, organisationMemberId: body.organisationMemberId },
+    data: { boardId, organisationMemberId: body.organisationMemberId },
     include: { organisationMember: { include: { user: true } } },
   });
 
-  await publishBoardEvent(req.params.boardId as string, "MEMBER_ADDED", req.user.id, member);
+  await publishBoardEvent(boardId, "MEMBER_ADDED", req.user.id, member);
   res.status(201).json(member);
 }
 
@@ -114,13 +125,19 @@ const statusSchema = z.object({
 
 export async function createStatus(req: AuthedRequest, res: Response) {
   const body = statusSchema.parse(req.body);
+  const boardId = req.params.boardId;
+
+  if (!boardId) {
+    return res.status(400).json({ error: "Board ID is required" });
+  }
+
   const last = await prisma.taskStatus.findFirst({
-    where: { boardId: req.params.boardId },
+    where: { boardId },
     orderBy: { position: "desc" },
   });
 
   const status = await prisma.taskStatus.create({
-    data: { ...body, boardId: req.params.boardId, position: nextPosition(last?.position ?? null) },
+    data: { ...body, boardId, position: nextPosition(last?.position ?? null) },
   });
 
   await publishBoardEvent(status.boardId, "STATUS_CREATED", req.user.id, status);

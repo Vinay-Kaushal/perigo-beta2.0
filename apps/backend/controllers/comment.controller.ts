@@ -10,6 +10,10 @@ export async function addComment(req: AuthedRequest, res: Response) {
   const body = commentSchema.parse(req.body);
   const taskId = req.params.taskId;
 
+  if (!taskId) {
+    return res.status(400).json({ error: "taskId is required" });
+  }
+
   const [comment, task] = await prisma.$transaction([
     prisma.comment.create({
       data: { taskId, userId: req.user.id, content: body.content },

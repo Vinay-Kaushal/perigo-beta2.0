@@ -1,7 +1,7 @@
-import { Response } from "express";
+import type { Response } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
-import { AuthedRequest } from "../middleware/auth";
+import type { AuthedRequest } from "../middleware/auth";
 import { publishBoardEvent } from "../lib/eventBus";
 import { nextPosition, betweenPosition, needsRebalance, POSITION_GAP } from "../utils/position";
 
@@ -17,6 +17,10 @@ const createTaskSchema = z.object({
 export async function createTask(req: AuthedRequest, res: Response) {
   const body = createTaskSchema.parse(req.body);
   const boardId = req.params.boardId;
+
+  if (!boardId) {
+    return res.status(400).json({ error: "Board ID is required" });
+  }
 
   const last = await prisma.task.findFirst({
     where: { statusId: body.statusId },
@@ -130,6 +134,9 @@ const moveTaskSchema = z.object({
 export async function moveTask(req: AuthedRequest, res: Response) {
   const body = moveTaskSchema.parse(req.body);
   const taskId = req.params.taskId;
+  if (!taskId) {
+    return res.status(400).json({ error: "Task ID is required" });
+  }
 
   const existing = await prisma.task.findUnique({ where: { id: taskId } });
   if (!existing) return res.status(404).json({ error: "Task not found" });
@@ -209,13 +216,18 @@ export async function deleteTask(req: AuthedRequest, res: Response) {
 const assigneeSchema = z.object({ userId: z.string().uuid() });
 
 export async function addAssignee(req: AuthedRequest, res: Response) {
+  const taskId = req.params.taskId;
+  if (!taskId) {
+    return res.status(400).json({ message: "Task ID is required." });
+  }
+
   const body = assigneeSchema.parse(req.body);
   const assignee = await prisma.taskAssignee.create({
-    data: { taskId: req.params.taskId, userId: body.userId },
+    data: { taskId, userId: body.userId },
     include: { user: true },
   });
 
-  const task = await prisma.task.findUniqueOrThrow({ where: { id: req.params.taskId } });
+  const task = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
   await prisma.taskActivity.create({
     data: { taskId: task.id, userId: req.user.id, type: "TASK_ASSIGNED", metadata: { userId: body.userId } },
   });
@@ -228,22 +240,29 @@ export async function addAssignee(req: AuthedRequest, res: Response) {
 }
 
 export async function removeAssignee(req: AuthedRequest, res: Response) {
-  const task = await prisma.task.findUniqueOrThrow({ where: { id: req.params.taskId } });
+  const taskId = req.params.taskId;
+  const userId = req.params.userId;
+
+  if (!taskId || !userId) {
+    return res.status(400).json({ message: "Task ID and user ID are required." });
+  }
+
+  const task = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
 
   await prisma.taskAssignee.delete({
-    where: { taskId_userId: { taskId: req.params.taskId, userId: req.params.userId } },
+    where: { taskId_userId: { taskId, userId } },
   });
   await prisma.taskActivity.create({
     data: {
       taskId: task.id,
       userId: req.user.id,
       type: "TASK_UNASSIGNED",
-      metadata: { userId: req.params.userId },
+      metadata: { userId },
     },
   });
   await publishBoardEvent(task.boardId, "TASK_ASSIGNEE_CHANGED", req.user.id, {
     taskId: task.id,
-    removedUserId: req.params.userId,
+    removedUserId: userId,
   });
 
   res.status(204).send();
