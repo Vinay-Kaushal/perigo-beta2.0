@@ -98,7 +98,7 @@ export async function addBoardMember(req: AuthedRequest, res: Response) {
     include: { organisationMember: { include: { user: true } } },
   });
 
-  await publishBoardEvent(boardId, "MEMBER_ADDED", req.user.id, member);
+  await publishBoardEvent(boardId as string, "MEMBER_ADDED", req.user.id, member);
   res.status(201).json(member);
 }
 

@@ -51,7 +51,7 @@ export async function createTask(req: AuthedRequest, res: Response) {
     return created;
   });
 
-  await publishBoardEvent(boardId, "TASK_CREATED", req.user.id, task);
+  await publishBoardEvent(boardId as string, "TASK_CREATED", req.user.id, task);
   res.status(201).json(task);
 }
 
@@ -66,7 +66,7 @@ export async function listTasks(req: AuthedRequest, res: Response) {
 
   const tasks = await prisma.task.findMany({
     where: {
-      boardId: req.params.boardId,
+      boardId: req.params.boardId as string,
       statusId: query.statusId,
       priority: query.priority,
       assignees: query.assigneeId ? { some: { userId: query.assigneeId } } : undefined,

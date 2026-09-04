@@ -1,6 +1,6 @@
-import { Response, NextFunction } from "express";
+import type { Response, NextFunction } from "express";
 import { prisma } from "../lib/prisma";
-import { AuthedRequest } from "./auth";
+import type { AuthedRequest } from "./auth";
 
 /**
  * Loads the caller's OrganisationMember row for :orgId (or the org that

@@ -1,7 +1,7 @@
-import { Response } from "express";
+import type { Response } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
-import { AuthedRequest } from "../middleware/auth";
+import type { AuthedRequest } from "../middleware/auth";
 
 const teamSchema = z.object({
   name: z.string().min(1).max(120),
@@ -15,7 +15,7 @@ export async function createTeam(req: AuthedRequest, res: Response) {
   const team = await prisma.team.create({
     data: {
       ...body,
-      organisationId: req.params.orgId,
+      organisationId: req.params.orgId as string,
       members: { create: { organisationMemberId: orgMembership.id } },
     },
     include: { members: true },
@@ -57,7 +57,7 @@ const addTeamMemberSchema = z.object({ organisationMemberId: z.string().uuid() }
 export async function addTeamMember(req: AuthedRequest, res: Response) {
   const body = addTeamMemberSchema.parse(req.body);
   const member = await prisma.teamMember.create({
-    data: { teamId: req.params.teamId, organisationMemberId: body.organisationMemberId },
+    data: { teamId: req.params.teamId as string, organisationMemberId: body.organisationMemberId },
     include: { organisationMember: { include: { user: true } } },
   });
   res.status(201).json(member);
