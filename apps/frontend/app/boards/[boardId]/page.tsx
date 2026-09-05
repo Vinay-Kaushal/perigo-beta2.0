@@ -199,7 +199,12 @@ export default function BoardPage() {
 
       api
         .patch(`/tasks/${activeId}/move`, { statusId, beforeTaskId, afterTaskId })
-        .catch(() => refresh()); // server rejected it (stale neighbour, etc.) — resync from truth
+        .catch((err) => {
+          // server rejected it (permission denied, stale neighbour, etc.) —
+          // resync the board to truth and let the person know why it snapped back
+          setError(err instanceof ApiError ? err.message : "Failed to move task");
+          refresh();
+        });
 
       return { ...prev, [statusId]: reordered };
     });

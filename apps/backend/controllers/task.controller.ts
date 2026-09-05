@@ -141,6 +141,20 @@ export async function moveTask(req: AuthedRequest, res: Response) {
   const existing = await prisma.task.findUnique({ where: { id: taskId } });
   if (!existing) return res.status(404).json({ error: "Task not found" });
 
+  // Approval gate: only board OWNER/ADMIN can move a task into an
+  // APPROVED or REJECTED column — regular members can move a card
+  // anywhere else (including *into* review), but the final call is
+  // reserved for people with elevated org access on this board.
+  const targetStatus = await prisma.taskStatus.findUnique({ where: { id: body.statusId } });
+  if (!targetStatus) return res.status(404).json({ error: "Target status not found" });
+
+  if (targetStatus.type === "APPROVED" || targetStatus.type === "REJECTED") {
+    const orgMembership = (req as any).orgMembership;
+    if (!orgMembership || orgMembership.role === "MEMBER") {
+      return res.status(403).json({ error: "Only an owner or admin can approve or reject a task" });
+    }
+  }
+
   const [before, after] = await Promise.all([
     body.beforeTaskId ? prisma.task.findUnique({ where: { id: body.beforeTaskId } }) : null,
     body.afterTaskId ? prisma.task.findUnique({ where: { id: body.afterTaskId } }) : null,

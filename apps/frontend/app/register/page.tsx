@@ -8,6 +8,9 @@ import { ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Card } from "@/components/ui/card";
+import { GoogleSignInButton } from "@/components/google-signin-button";
+import { AuthLayout } from "@/components/auth-layout";
 
 export default function RegisterPage() {
   const { register } = useAuth();
@@ -24,7 +27,7 @@ export default function RegisterPage() {
     setSubmitting(true);
     try {
       await register(email, password, name);
-      router.push("/orgs");
+      router.push("/dashboard");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
     } finally {
@@ -33,13 +36,11 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-8">
-          <div className="mb-1 font-mono text-sm text-accent">perigo</div>
-          <h1 className="text-xl font-medium text-ink">Create your account</h1>
-        </div>
+    <AuthLayout>
+      <h1 className="mb-1 text-xl font-medium text-ink">Create your account</h1>
+      <p className="mb-6 text-sm text-ink-faint">Free to start — no credit card required.</p>
 
+      <Card className="p-5">
         <form onSubmit={onSubmit} className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="name">Name</Label>
@@ -77,13 +78,20 @@ export default function RegisterPage() {
           </Button>
         </form>
 
-        <p className="mt-6 text-sm text-ink-muted">
-          Already have an account?{" "}
-          <Link href="/login" className="text-accent hover:text-accent-hover">
-            Sign in
-          </Link>
-        </p>
-      </div>
-    </div>
+        <div className="my-5 flex items-center gap-3">
+          <div className="h-px flex-1 bg-border" />
+          <span className="text-xs text-ink-faint">or</span>
+          <div className="h-px flex-1 bg-border" />
+        </div>
+        <GoogleSignInButton />
+      </Card>
+
+      <p className="mt-6 text-center text-sm text-ink-muted">
+        Already have an account?{" "}
+        <Link href="/login" className="text-accent hover:text-accent-hover">
+          Sign in
+        </Link>
+      </p>
+    </AuthLayout>
   );
 }

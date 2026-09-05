@@ -67,7 +67,7 @@ export default function OrgsPage() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {orgs.map((org) => (
               <Link key={org.id} href={`/orgs/${org.id}`}>
-                <Card className="flex h-full flex-col gap-1 p-4 transition-colors hover:border-border-hover">
+                <Card interactive className="flex h-full flex-col gap-1 p-4">
                   <div className="flex items-center gap-2">
                     <Building2 size={16} className="text-accent" />
                     <span className="font-medium text-ink">{org.name}</span>

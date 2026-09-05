@@ -6,6 +6,7 @@ import Link from "next/link";
 import { api, ApiError } from "@/lib/api";
 import type { Board, Organisation } from "@/lib/types";
 import { TopBar } from "@/components/top-bar";
+import { OrgTabs } from "@/components/org-tabs";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,6 +44,7 @@ export default function OrgBoardsPage() {
   return (
     <div className="min-h-screen">
       <TopBar crumbs={[{ label: org?.name ?? "…" }]} />
+      <OrgTabs orgId={orgId} />
 
       <div className="mx-auto max-w-3xl px-4 py-10">
         <div className="mb-6 flex items-center justify-between">
@@ -68,7 +70,7 @@ export default function OrgBoardsPage() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {boards.map((board) => (
               <Link key={board.id} href={`/boards/${board.id}`}>
-                <Card className="flex h-full flex-col gap-1 p-4 transition-colors hover:border-border-hover">
+                <Card interactive className="flex h-full flex-col gap-1 p-4">
                   <div className="flex items-center gap-2">
                     <Kanban size={16} className="text-accent" />
                     <span className="font-medium text-ink">{board.name}</span>
