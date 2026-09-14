@@ -7,7 +7,7 @@ import { Bell, CheckCheck } from "lucide-react";
 import { toast } from "sonner";
 import { useSWRConfig } from "swr";
 import { api } from "@/lib/api";
-import { useApi } from "@/lib/hooks";
+import { useApi, useDebouncedRevalidate } from "@/lib/hooks";
 import { useChannelEvents } from "@/lib/realtime";
 import type { Notification } from "@/lib/types";
 import { Avatar } from "@/components/ui/avatar";
@@ -44,19 +44,20 @@ export function NotificationBell() {
   const { data: list } = useApi<{ items: Notification[] }>("/me/notifications?limit=8");
 
   const refresh = () => mutate((key) => typeof key === "string" && key.startsWith("/me/"));
+  const refreshSoon = useDebouncedRevalidate(["/me/"]);
 
   useChannelEvents(
     null,
     (event) => {
       if (event.type === "NOTIFICATION_CREATED") {
-        refresh();
+        refreshSoon();
         const n = event.data as Notification;
         toast(n.title, {
           description: n.body ?? undefined,
           action: n.link ? { label: "View", onClick: () => router.push(n.link!) } : undefined,
         });
       } else if (event.type === "NOTIFICATIONS_READ") {
-        refresh();
+        refreshSoon();
       }
     },
     { personal: true }

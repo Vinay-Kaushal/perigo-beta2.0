@@ -1,5 +1,7 @@
 # perigo
 
+[![CI](https://github.com/Vinay-Kaushal/perigo-beta2.0/actions/workflows/ci.yml/badge.svg)](https://github.com/Vinay-Kaushal/perigo-beta2.0/actions/workflows/ci.yml)
+
 Work management for organisations: a realtime **service desk** (tickets, assignment, SLAs), **projects** (kanban boards), **expense approvals**, **goal tracking**, and **dashboards**, with invite-and-approve onboarding and an audit trail.
 
 ## Architecture
@@ -29,7 +31,26 @@ packages/db     Prisma schema, migrations, generated client (PostgreSQL)
 | Accounts | Email verification (required before creating organisations or inviting), forgot/reset password, sign out everywhere. |
 | Admin | Roles (owner/admin/member), teams, org settings, audit log, 30-day PDF report. |
 
-## Getting started
+## Run with Docker (one command)
+
+Requirements: Docker with Compose v2.
+
+```bash
+bun run docker:up        # or: bash scripts/docker-up.sh
+bun run docker:seed      # optional demo data
+```
+
+The first run creates a root `.env` from `.env.docker.example` with generated secrets, builds the images, applies database migrations, and waits until every service is healthy:
+
+| Service | URL |
+|---|---|
+| Web | http://localhost:3000 |
+| API | http://localhost:4000 (`/ready` health check) |
+| Websocket | ws://localhost:4001 |
+
+Postgres and Redis stay inside the Docker network (no host ports), so they won't clash with local installs. `bun run docker:logs` follows the app logs; `bun run docker:down` stops everything (add `-v` to delete the data volumes). Change ports, origins, email and Google settings in `.env`; behind HTTPS set `COOKIE_SECURE=true`.
+
+## Getting started (without Docker)
 
 Requirements: Bun ≥ 1.3, Node ≥ 20, PostgreSQL 16, Redis 7.
 
@@ -47,6 +68,14 @@ bun run dev                                           # all three apps via turbo
 
 Demo logins after seeding (password `Password123`): `owner@acme.test`, `admin@acme.test`, `alex@acme.test`, `sam@acme.test`. `jordan@acme.test` has a pending join request for an admin to approve.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
+
+1. **test** — installs from the lockfile, applies migrations to a fresh Postgres, fails on schema/migration drift, type-checks all three apps, runs backend, websocket and frontend unit tests, and builds the frontend.
+2. **e2e** — seeds a database, starts the API, websocket and web app, and runs the Playwright suite (artifacts and server logs are uploaded on failure).
+3. **docker** — builds every Docker image so the compose setup can't silently break.
+
 ## Tests
 
 The suites run against throwaway services and **truncate every table**. They refuse any database whose name doesn't contain `test`.
@@ -56,7 +85,7 @@ docker run -d --name xsam-test-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=p
 docker run -d --name xsam-test-redis -p 6381:6379 redis:7-alpine
 cd apps/backend && bun run test:db:prepare    # apply migrations to the test DB
 
-bun run test          # from the repo root: backend (142) + websocket (9) + frontend unit (15)
+bun run test          # from the repo root: backend (147) + websocket (9) + frontend unit (15)
 ```
 
 Override the database and Redis with `TEST_DATABASE_URL` and `TEST_REDIS_URL`.
@@ -83,7 +112,8 @@ The e2e suite covers: login redirects and open-redirect protection, httpOnly ses
 - **Authorisation.** Every org-scoped query is filtered by the org id from the URL, never by an id supplied in the body. A resource from another org returns 404, not 403, so ids can't be probed. Role checks cover: last-owner protection, admins can't remove other admins, board visibility, the approval column gate, and separation of duties on expense approval.
 - **Invitations.** Tokens are 256-bit and random, and only their SHA-256 is stored. Accepting requires both the token and a matching account email. Links expire, are single-use, and are replaced when an invite is resent.
 - **Websockets.** A short-lived, single-use ticket from `POST /auth/ws-ticket` is used instead of putting the JWT in the URL. The server checks an origin allowlist, re-checks channel access on subscribe, drops subscriptions the moment access is revoked, and enforces per-socket rate limits, a payload cap and connection caps.
-- **HTTP.** Helmet with a strict CSP, a CORS allowlist, `Cache-Control: no-store`, Redis-backed rate limits (global, login, signup, invite lookup), request ids, a 256KB body cap, env validation at boot, no stack traces in responses, and graceful shutdown.
+- **Rate limits.** Redis-backed, so they hold across instances. Anonymous traffic is limited per IP; signed-in traffic per user, so a whole office behind one NAT or VPN address doesn't share a budget; invalid or revoked credentials are counted per IP so garbage tokens can't be used to flood. Login, signup, token lookups and verification emails have their own limits.
+- **HTTP.** Helmet with a strict CSP, a CORS allowlist, `Cache-Control: no-store`, request ids, a 256KB body cap, env validation at boot, no stack traces in responses, and graceful shutdown.
 - **Frontend.** CSP and security headers, no tokens in JavaScript, open-redirect-safe `?next=`, HTML-escaped email templates, http(s)-only avatar URLs.
 - **Audit log.** Role changes, membership, invitations and approvals, expense decisions and deletions, each with actor and IP.
 

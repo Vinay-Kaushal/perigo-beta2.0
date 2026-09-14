@@ -24,7 +24,11 @@ const envSchema = z.object({
   MAIL_FROM: z.string().default("perigo <no-reply@perigo.local>"),
   // Number of reverse proxies in front of the API — needed for a correct req.ip.
   TRUST_PROXY: z.coerce.number().int().min(0).default(0),
-  RATE_LIMIT_GLOBAL_MAX: z.coerce.number().int().positive().default(600), // per IP / minute
+  // Anonymous traffic per IP / minute. Signed-in traffic is limited per user instead, so a whole
+  // office behind one NAT or VPN address doesn't share a single budget.
+  RATE_LIMIT_GLOBAL_MAX: z.coerce.number().int().positive().default(600),
+  RATE_LIMIT_USER_MAX: z.coerce.number().int().positive().default(1200), // per user / minute
+  RATE_LIMIT_BAD_AUTH_MAX: z.coerce.number().int().positive().default(120), // invalid/revoked credentials per IP / minute
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10), // per IP+email / 15 min
   RATE_LIMIT_SIGNUP_MAX: z.coerce.number().int().positive().default(20), // per IP / hour
   RATE_LIMIT_TOKEN_MAX: z.coerce.number().int().positive().default(30), // invite/verification lookups per IP / minute

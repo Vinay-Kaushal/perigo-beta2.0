@@ -1,0 +1,198 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.4.0
+  NODE_VERSION: 20
+  PRISMA_HIDE_UPDATE_MESSAGE: "1"
+
+jobs:
+  test:
+    name: Type-check, unit & integration tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: perigo_test
+        ports: ["5434:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6381:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5434/perigo_test
+      TEST_REDIS_URL: redis://localhost:6381
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+      - name: Generate Prisma client
+        working-directory: packages/db
+        run: bunx prisma generate
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+      - name: Apply migrations to the test database
+        working-directory: packages/db
+        run: bunx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+      - name: Check migrations match the schema
+        working-directory: packages/db
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: |
+          drift=$(bunx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script | grep -v '^Loaded' | grep -v 'empty migration' | grep -v '^\s*$' || true)
+          if [ -n "$drift" ]; then echo "Schema and migrations are out of sync:"; echo "$drift"; exit 1; fi
+
+      - name: Type-check backend
+        working-directory: apps/backend
+        run: bunx tsc --noEmit -p tsconfig.json
+      - name: Type-check websocket
+        working-directory: apps/websocket
+        run: bunx tsc --noEmit -p tsconfig.json
+      - name: Type-check frontend
+        working-directory: apps/frontend
+        run: bunx tsc --noEmit
+
+      - name: Backend tests
+        working-directory: apps/backend
+        run: bun test
+      - name: Websocket tests
+        working-directory: apps/websocket
+        run: bun test
+      - name: Frontend unit tests
+        working-directory: apps/frontend
+        run: bun test lib
+
+      - name: Build frontend
+        working-directory: apps/frontend
+        run: npx next build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+
+  e2e:
+    name: End-to-end (Playwright)
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: perigo_e2e_test
+        ports: ["5434:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6381:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5434/perigo_e2e_test
+      REDIS_URL: redis://localhost:6381
+      JWT_SECRET: ci-e2e-secret-not-used-anywhere-else-0123456789
+      CORS_ORIGIN: http://localhost:3000
+      FRONTEND_URL: http://localhost:3000
+      WS_ALLOWED_ORIGINS: http://localhost:3000
+      RATE_LIMIT_AUTH_MAX: 1000
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+      NEXT_PUBLIC_WS_URL: ws://localhost:4001
+      NEXT_TELEMETRY_DISABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Prepare database
+        working-directory: packages/db
+        run: bunx prisma generate && bunx prisma migrate deploy
+      - name: Seed demo data
+        working-directory: apps/backend
+        run: bun scripts/seed.ts
+
+      - name: Build frontend
+        working-directory: apps/frontend
+        run: npx next build
+
+      - name: Start API, websocket and web
+        run: |
+          (cd apps/backend && PORT=4000 bun index.ts > /tmp/api.log 2>&1 &)
+          (cd apps/websocket && WS_PORT=4001 bun index.ts > /tmp/ws.log 2>&1 &)
+          (cd apps/frontend && npx next start -p 3000 > /tmp/web.log 2>&1 &)
+          for _ in $(seq 1 60); do
+            curl -sf http://localhost:4000/ready > /dev/null && curl -sf http://localhost:4001/health > /dev/null && curl -sf -o /dev/null http://localhost:3000/login && exit 0
+            sleep 1
+          done
+          echo "Stack did not become ready"; tail -50 /tmp/api.log /tmp/ws.log /tmp/web.log; exit 1
+
+      - name: Install Playwright browser
+        working-directory: apps/frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run end-to-end tests
+        working-directory: apps/frontend
+        run: npx playwright test
+        env:
+          E2E_BASE_URL: http://localhost:3000
+
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: apps/frontend/test-results
+          retention-days: 7
+
+      - name: Server logs
+        if: failure()
+        run: tail -100 /tmp/api.log /tmp/ws.log /tmp/web.log
+
+  docker:
+    name: Docker images build
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build all compose targets
+        env:
+          JWT_SECRET: ci-build-only
+        run: docker compose build

@@ -1,0 +1,97 @@
+# One-command local stack:  bun run docker:up   (see README → Docker)
+# Configuration comes from a root .env (created from .env.docker.example by scripts/docker-up.sh).
+name: perigo
+
+x-server-env: &server-env
+  DATABASE_URL: postgresql://perigo:${POSTGRES_PASSWORD:-perigo}@postgres:5432/perigo
+  REDIS_URL: redis://redis:6379
+  JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (scripts/docker-up.sh generates one)}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: perigo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-perigo}
+      POSTGRES_DB: perigo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U perigo -d perigo"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    build: { context: ., target: tools }
+    environment:
+      DATABASE_URL: postgresql://perigo:${POSTGRES_PASSWORD:-perigo}@postgres:5432/perigo
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    build: { context: ., target: api }
+    environment:
+      <<: *server-env
+      PORT: 4000
+      CORS_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      FRONTEND_URL: ${WEB_ORIGIN:-http://localhost:3000}
+      # Plain-http localhost; set true behind HTTPS.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-perigo <no-reply@perigo.local>}
+      RATE_LIMIT_AUTH_MAX: ${RATE_LIMIT_AUTH_MAX:-10}
+    ports:
+      - "${API_PORT:-4000}:4000"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  ws:
+    build: { context: ., target: ws }
+    environment:
+      <<: *server-env
+      WS_PORT: 4001
+      WS_ALLOWED_ORIGINS: ${WEB_ORIGIN:-http://localhost:3000}
+    ports:
+      - "${WS_PORT:-4001}:4001"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+      args:
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:4000}
+        NEXT_PUBLIC_WS_URL: ${PUBLIC_WS_URL:-ws://localhost:4001}
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api: { condition: service_healthy }
+      ws: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

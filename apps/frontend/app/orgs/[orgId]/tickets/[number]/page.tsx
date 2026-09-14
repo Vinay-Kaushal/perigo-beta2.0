@@ -129,10 +129,11 @@ export default function TicketDetailPage() {
     }
   }
 
-  if (error) {
+  // Only replace the page when there's nothing to show; a failed background refresh keeps the last good data.
+  if (error && !t) {
     return (
       <Page className="max-w-5xl">
-        <ErrorState message={errorMessage(error, "Couldn't load this ticket")} />
+        <ErrorState message={errorMessage(error, "Couldn't load this ticket")} onRetry={() => reload()} />
       </Page>
     );
   }

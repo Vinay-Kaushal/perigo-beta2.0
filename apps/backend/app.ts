@@ -7,7 +7,7 @@ import { prisma } from "./lib/prisma";
 import { redis } from "./lib/redis";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { requestContext } from "./middleware/requestContext";
-import { rateLimit } from "./middleware/rateLimit";
+import { hasCredentials, rateLimit } from "./middleware/rateLimit";
 import { privateRouter, publicRouter } from "./routes";
 
 export function createApp() {
@@ -56,7 +56,9 @@ export function createApp() {
     }
   });
 
-  app.use(rateLimit({ name: "global", windowSec: 60, max: () => config.RATE_LIMIT_GLOBAL_MAX }));
+  // Per-IP limit for anonymous traffic; credentialed requests are limited per user in routes/index.ts,
+  // and failed credentials are counted per IP in requireAuth.
+  app.use(rateLimit({ name: "global", windowSec: 60, max: () => config.RATE_LIMIT_GLOBAL_MAX, skip: hasCredentials }));
 
   app.use(publicRouter);
   app.use(privateRouter);

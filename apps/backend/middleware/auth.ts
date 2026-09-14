@@ -3,8 +3,22 @@ import { prisma } from "../lib/prisma";
 import { verifyAccessToken } from "../lib/tokens";
 import { HttpError } from "../lib/http";
 import { CSRF_HEADER, SESSION_COOKIE, readCookie } from "../lib/session";
+import { env } from "../lib/env";
+import { hitLimit } from "./rateLimit";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Credentialed requests skip the anonymous per-IP limit, so bad or revoked
+ * credentials are counted per IP here — garbage tokens can't be used to flood.
+ */
+async function rejectCredentials(req: Request, res: Response, message: string) {
+  if (await hitLimit("bad-auth", req.ip ?? "unknown", 60, env().RATE_LIMIT_BAD_AUTH_MAX)) {
+    res.setHeader("Retry-After", "60");
+    return res.status(429).json({ error: "Too many requests, please try again later", code: "RATE_LIMITED" });
+  }
+  return res.status(401).json({ error: message, code: "UNAUTHENTICATED" });
+}
 
 /**
  * Accepts either a bearer token (API clients) or the httpOnly session cookie
@@ -30,7 +44,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   try {
     claims = verifyAccessToken(token);
   } catch {
-    return res.status(401).json({ error: "Invalid or expired session", code: "UNAUTHENTICATED" });
+    return rejectCredentials(req, res, "Invalid or expired session");
   }
 
   try {
@@ -39,7 +53,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       select: { id: true, email: true, name: true, tokenVersion: true, emailVerifiedAt: true },
     });
     if (!user || user.tokenVersion !== claims.tv) {
-      return res.status(401).json({ error: "Session is no longer valid", code: "UNAUTHENTICATED" });
+      return rejectCredentials(req, res, "Session is no longer valid");
     }
     req.user = { id: user.id, email: user.email, name: user.name, emailVerified: !!user.emailVerifiedAt };
     next();

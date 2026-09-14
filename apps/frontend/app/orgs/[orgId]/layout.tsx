@@ -2,9 +2,8 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useSWRConfig } from "swr";
 import { ShieldOff } from "lucide-react";
-import { useOrg } from "@/lib/hooks";
+import { useDebouncedRevalidate, useOrg } from "@/lib/hooks";
 import { useChannelEvents } from "@/lib/realtime";
 import { ApiError } from "@/lib/api";
 import { EmptyState, ErrorState, Skeleton } from "@/components/ui/feedback";
@@ -18,11 +17,9 @@ import { Button } from "@/components/ui/button";
 export default function OrgLayout({ children }: { children: React.ReactNode }) {
   const { orgId } = useParams<{ orgId: string }>();
   const { org, error, mutate: retry } = useOrg(orgId);
-  const { mutate } = useSWRConfig();
+  const revalidateOrg = useDebouncedRevalidate([`/organisations/${orgId}`]);
 
-  useChannelEvents(orgId ? `org:${orgId}` : null, () => {
-    mutate((key) => typeof key === "string" && key.startsWith(`/organisations/${orgId}`));
-  });
+  useChannelEvents(orgId ? `org:${orgId}` : null, revalidateOrg);
 
   if (error instanceof ApiError && (error.status === 404 || error.status === 403)) {
     return (

@@ -8,7 +8,7 @@ import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { ArrowLeft, Columns3, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { api, errorMessage } from "@/lib/api";
-import { useApi } from "@/lib/hooks";
+import { useApi, useDebouncedRevalidate } from "@/lib/hooks";
 import { useChannelEvents, useFrames, useRealtime } from "@/lib/realtime";
 import type { Board, Member, Task } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -57,13 +57,13 @@ function BoardInner() {
 
   const refresh = useCallback(() => Promise.all([reloadBoard(), reloadTasks()]), [reloadBoard, reloadTasks]);
 
+  const revalidateBoard = useDebouncedRevalidate([`/boards/${boardId}`, "/tasks/"]);
   useChannelEvents(channel, (e) => {
     if (e.type === "BOARD_DELETED") {
       toast.error("This board was deleted");
       return router.push("/orgs");
     }
-    if (e.type.startsWith("STATUS_") || e.type.startsWith("MEMBER_") || e.type === "BOARD_UPDATED") reloadBoard();
-    reloadTasks();
+    revalidateBoard();
   });
 
   useFrames((f) => {
@@ -129,10 +129,10 @@ function BoardInner() {
     send({ type: "presence:cursor", channel, x: e.clientX - rect.left + e.currentTarget.scrollLeft, y: e.clientY - rect.top + e.currentTarget.scrollTop });
   }
 
-  if (error) {
+  if (error && !board) {
     return (
       <div className="p-6">
-        <ErrorState message={errorMessage(error, "Couldn't load this board")} />
+        <ErrorState message={errorMessage(error, "Couldn't load this board")} onRetry={() => reloadBoard()} />
       </div>
     );
   }

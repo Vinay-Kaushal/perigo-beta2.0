@@ -44,6 +44,7 @@ publicRouter.post("/auth/reset-password", loginLimiter, h(auth.resetPassword));
 
 export const privateRouter = Router();
 privateRouter.use(requireAuth);
+privateRouter.use(rateLimit({ name: "user", windowSec: 60, max: () => env().RATE_LIMIT_USER_MAX, key: (req) => req.user!.id }));
 
 // Account
 privateRouter.get("/auth/me", h(auth.me));

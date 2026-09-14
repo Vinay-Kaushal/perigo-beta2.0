@@ -1,0 +1,18 @@
+# Keep images small and secrets out of them.
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/test-results
+**/playwright-report
+**/*.tsbuildinfo
+**/.turbo
+.git
+.github
+**/.env
+**/.env.*
+!**/.env.example
+COMMIT_PLAN.md
+**/.agents
+**/.claude
+**/.windsurf

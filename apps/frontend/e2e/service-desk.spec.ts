@@ -29,11 +29,12 @@ test("assigning a ticket reaches the assignee live, and their updates reach the 
   await member.page.getByRole("link", { name: new RegExp(title) }).click();
   await member.page.getByRole("button", { name: "Change status" }).click();
   await member.page.getByRole("menuitem", { name: "In progress" }).click();
-  await expect(admin.page.getByText(/changed status from\s*Open\s*to\s*In progress/)).toBeVisible();
+  await expect(admin.page.getByRole("region", { name: "Activity" }).getByText(/changed status from\s*Open\s*to\s*In progress/)).toBeVisible();
 
   await member.page.getByLabel("Comment").fill("Swapping it with a loaner now.");
   await member.page.getByRole("button", { name: "Comment", exact: true }).click();
-  await expect(admin.page.getByText("Swapping it with a loaner now.")).toBeVisible();
+  // Scoped to the timeline: the same text also arrives in the live notification toast.
+  await expect(admin.page.getByRole("region", { name: "Activity" }).getByText("Swapping it with a loaner now.")).toBeVisible();
 
   // Resolving requires a note.
   await member.page.getByRole("button", { name: "Change status" }).click();
@@ -41,7 +42,7 @@ test("assigning a ticket reaches the assignee live, and their updates reach the 
   await expect(member.page.getByRole("button", { name: "Resolve ticket" })).toBeDisabled();
   await member.page.getByLabel("Resolution note").fill("Replaced the battery.");
   await member.page.getByRole("button", { name: "Resolve ticket" }).click();
-  await expect(admin.page.getByText("Replaced the battery.").first()).toBeVisible();
+  await expect(admin.page.getByText("Resolution").locator("..").getByText("Replaced the battery.")).toBeVisible();
 
   expect(admin.errors).toEqual([]);
   expect(member.errors).toEqual([]);

@@ -23,6 +23,8 @@ Object.assign(process.env, {
   RATE_LIMIT_SIGNUP_MAX: "100000",
   RATE_LIMIT_AUTH_MAX: "25",
   RATE_LIMIT_TOKEN_MAX: "100000",
+  RATE_LIMIT_USER_MAX: "100000",
+  RATE_LIMIT_BAD_AUTH_MAX: "60",
   GOOGLE_CLIENT_ID: "",
 });
 delete process.env.RESEND_API_KEY;

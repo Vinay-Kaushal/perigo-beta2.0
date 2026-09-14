@@ -7,7 +7,11 @@
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",
-    "test": "turbo run test"
+    "test": "turbo run test",
+    "docker:up": "bash scripts/docker-up.sh",
+    "docker:down": "docker compose down",
+    "docker:seed": "docker compose run --rm -e NODE_ENV=development api bun scripts/seed.ts",
+    "docker:logs": "docker compose logs -f api ws web"
   },
   "devDependencies": {
     "prettier": "^3.7.4",
