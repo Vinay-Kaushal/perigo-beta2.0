@@ -38,6 +38,7 @@ publicRouter.post("/auth/login", loginLimiter, h(auth.login));
 publicRouter.post("/auth/google", loginLimiter, h(auth.googleAuth));
 publicRouter.get("/invitations/:token", inviteLookupLimiter, h(invites.previewInvitation));
 publicRouter.post("/auth/logout", h(auth.logout));
+publicRouter.post("/email/unsubscribe", rateLimit({ name: "unsubscribe", windowSec: 60, max: () => env().RATE_LIMIT_TOKEN_MAX }), h(notifications.unsubscribe));
 publicRouter.post("/auth/verify-email", verifyLimiter, h(auth.verifyEmail));
 publicRouter.post("/auth/forgot-password", loginLimiter, h(auth.forgotPassword));
 publicRouter.post("/auth/reset-password", loginLimiter, h(auth.resetPassword));
@@ -62,6 +63,8 @@ privateRouter.get("/me/join-requests", h(invites.myJoinRequests));
 privateRouter.get("/me/notifications", h(notifications.listNotifications));
 privateRouter.get("/me/notifications/unread-count", h(notifications.unreadCount));
 privateRouter.post("/me/notifications/read-all", h(notifications.markAllRead));
+privateRouter.get("/me/notification-preferences", h(notifications.getPreferences));
+privateRouter.patch("/me/notification-preferences", h(notifications.updatePreferences));
 privateRouter.post("/me/notifications/:notificationId/read", h(notifications.markRead));
 
 // Invitee side of an invitation

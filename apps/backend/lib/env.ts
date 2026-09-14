@@ -25,6 +25,14 @@ const envSchema = z.object({
   ATTACHMENTS_PER_TICKET_MAX: z.coerce.number().int().positive().default(50),
   BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(15).default(12),
   RESEND_API_KEY: z.string().optional(),
+  // smtp://user:pass@host:587 or smtps://user:pass@host:465 — used when set (takes precedence over Resend).
+  SMTP_URL: z.string().optional(),
+  // Public URL of this API, used for one-click unsubscribe links in emails.
+  API_PUBLIC_URL: z.string().url().default("http://localhost:4000"),
+  // Notification emails for a user are batched for this long, then sent as one email (0 = next worker tick).
+  EMAIL_BATCH_WINDOW_SEC: z.coerce.number().int().min(0).default(60),
+  EMAIL_WORKER: z.enum(["on", "off"]).default("on"),
+  EMAIL_WORKER_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   MAIL_FROM: z.string().default("perigo <no-reply@perigo.local>"),
   // Number of reverse proxies in front of the API — needed for a correct req.ip.
   TRUST_PROXY: z.coerce.number().int().min(0).default(0),

@@ -5,6 +5,7 @@ export interface MailMessage {
   subject: string;
   text: string;
   html: string;
+  headers?: Record<string, string>;
 }
 
 /** Captured messages — lets tests assert on what would have been sent. */
@@ -14,38 +15,65 @@ export function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
+type Transport = (message: MailMessage) => Promise<void>;
+let testTransport: Transport | null = null;
+
+/** Tests can simulate provider failures. */
+export function setTestTransport(transport: Transport | null) {
+  testTransport = transport;
+}
+
+let smtp: import("nodemailer").Transporter | null = null;
+async function smtpTransport(url: string) {
+  if (!smtp) {
+    const nodemailer = await import("nodemailer");
+    smtp = nodemailer.createTransport(url);
+  }
+  return smtp;
+}
+
 /**
- * Sends through Resend when RESEND_API_KEY is set; otherwise logs the
- * message (development) so invite links are still reachable locally.
- * Delivery failures are logged, not thrown — the invite link is also
- * returned to the inviter, so a mail outage doesn't block onboarding.
+ * Sends one message through the configured provider and throws on failure,
+ * so queued deliveries can retry. Order: test outbox, SMTP, Resend, console.
  */
-export async function sendMail(message: MailMessage): Promise<boolean> {
-  const { RESEND_API_KEY, MAIL_FROM, NODE_ENV } = env();
+export async function deliverMail(message: MailMessage): Promise<"sent" | "logged"> {
+  const { NODE_ENV, SMTP_URL, RESEND_API_KEY, MAIL_FROM } = env();
 
   if (NODE_ENV === "test") {
+    if (testTransport) await testTransport(message);
     outbox.push(message);
-    return true;
+    return "sent";
   }
 
-  if (!RESEND_API_KEY) {
-    console.info(`[mail] (no provider configured) to=${message.to} subject="${message.subject}"\n${message.text}`);
-    return false;
+  if (SMTP_URL) {
+    const transport = await smtpTransport(SMTP_URL);
+    await transport.sendMail({ from: MAIL_FROM, to: message.to, subject: message.subject, text: message.text, html: message.html, headers: message.headers });
+    return "sent";
   }
 
-  try {
+  if (RESEND_API_KEY) {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: MAIL_FROM, to: message.to, subject: message.subject, text: message.text, html: message.html }),
+      body: JSON.stringify({ from: MAIL_FROM, to: message.to, subject: message.subject, text: message.text, html: message.html, headers: message.headers }),
     });
-    if (!res.ok) {
-      console.error(`[mail] provider rejected message to ${message.to}: ${res.status}`);
-      return false;
-    }
-    return true;
+    if (!res.ok) throw new Error(`Email provider rejected message (${res.status})`);
+    return "sent";
+  }
+
+  console.info(`[mail] (no provider configured) to=${message.to} subject="${message.subject}"\n${message.text}`);
+  return "logged";
+}
+
+/**
+ * For transactional mail sent inline (invitations, verification, password reset):
+ * never throws — callers also expose the link another way or let the user retry.
+ */
+export async function sendMail(message: MailMessage): Promise<boolean> {
+  try {
+    return (await deliverMail(message)) === "sent";
   } catch (err) {
-    console.error("[mail] send failed", err);
+    console.error(`[mail] send failed to ${message.to}`, err);
     return false;
   }
 }

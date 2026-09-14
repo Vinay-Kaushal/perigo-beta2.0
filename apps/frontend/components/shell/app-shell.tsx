@@ -16,7 +16,7 @@ import { NotificationBell } from "./notification-bell";
 import { CommandPalette } from "./command-palette";
 import { cn } from "@/lib/utils";
 
-const BARE_ROUTES = ["/login", "/register", "/forgot-password", "/reset-password", "/verify-email"];
+const BARE_ROUTES = ["/login", "/register", "/forgot-password", "/reset-password", "/verify-email", "/unsubscribe"];
 const LAST_ORG_KEY = "perigo_last_org";
 
 function VerifyEmailBanner({ email }: { email: string }) {

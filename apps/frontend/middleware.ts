@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 // UX-level routing only — the API enforces authentication on every request.
 const AUTH_PAGES = ["/login", "/register", "/forgot-password"];
-const PUBLIC_PREFIXES = ["/invitations/", "/verify-email", "/reset-password"];
+const PUBLIC_PREFIXES = ["/invitations/", "/verify-email", "/reset-password", "/unsubscribe"];
 
 export function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;

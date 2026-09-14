@@ -31,7 +31,7 @@ export function setUnauthorizedHandler(handler: () => void) {
 const baseHeaders = { "X-CSRF-Protection": "1" };
 
 // 401s on these paths are expected (checking for a session, bad credentials) and must not bounce to /login.
-const QUIET_401 = ["/auth/me", "/auth/login", "/auth/register", "/auth/google", "/auth/reset-password", "/auth/verify-email"];
+const QUIET_401 = ["/auth/me", "/auth/login", "/auth/register", "/auth/google", "/auth/reset-password", "/auth/verify-email", "/email/unsubscribe"];
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   let res: Response;

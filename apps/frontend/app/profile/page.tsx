@@ -13,6 +13,7 @@ import { Field, Input } from "@/components/ui/input";
 import { Avatar } from "@/components/ui/avatar";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { fullDate } from "@/lib/utils";
+import { NotificationPreferencesCard } from "@/components/notification-preferences";
 
 export default function ProfilePage() {
   const { user, refreshUser, adoptSession, logoutEverywhere } = useAuth();
@@ -70,7 +71,7 @@ export default function ProfilePage() {
 
   return (
     <Page className="max-w-3xl">
-      <PageHeader title="Account settings" description="Manage your profile and security." />
+      <PageHeader title="Account settings" description="Manage your profile, notifications and security." />
       <div className="space-y-6">
         <Card>
           <CardHeader title="Profile" description="Visible to members of your organisations." />
@@ -97,6 +98,8 @@ export default function ProfilePage() {
             </div>
           </form>
         </Card>
+
+        <NotificationPreferencesCard />
 
         <Card>
           <CardHeader title="Password" description="Changing your password signs you out of every other device." />

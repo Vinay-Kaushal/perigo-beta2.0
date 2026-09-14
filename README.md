@@ -28,6 +28,7 @@ packages/db     Prisma schema, migrations, generated client (PostgreSQL)
 | Goals | Three kinds: *Metric* (manual check-ins), *Tickets resolved* (counted automatically) and *Budget* (approved spend, counted automatically). Health (on track / at risk / off track) compares progress with where you'd be on a straight line through the period. |
 | Attachments | Files on tickets and comments (drag-and-drop, progress, image previews). Server-side type allowlist verified against the file's bytes, 10 MB cap, random storage keys, sandboxed downloads; stored on disk (persistent `uploads` volume in Docker). |
 | Mentions | `@` autocomplete of org members in ticket descriptions and comments, and task comments (board members). Mentioned people are notified and start watching; non-members are ignored silently. |
+| Notifications | In-app (live) and email, with per-category preferences (assignments, mentions, approvals, your requests, ticket activity). Emails are batched per user (default 60 s) into one message, skip anything already read in the app, go only to verified addresses, and include one-click unsubscribe. Delivery runs through a Redis queue with retries and a dead-letter list, via SMTP or Resend. |
 | Projects | Kanban boards with drag-and-drop, live presence and cursors, task assignment and comments. |
 | Projects admin | Owners/admins add, rename, retype, reorder and delete board columns; changes sync live. |
 | Accounts | Email verification (required before creating organisations or inviting), forgot/reset password, sign out everywhere. |
@@ -50,7 +51,7 @@ The first run creates a root `.env` from `.env.docker.example` with generated se
 | API | http://localhost:4000 (`/ready` health check) |
 | Websocket | ws://localhost:4001 |
 
-Postgres and Redis stay inside the Docker network (no host ports), so they won't clash with local installs. `bun run docker:logs` follows the app logs; `bun run docker:down` stops everything (add `-v` to delete the data volumes). Change ports, origins, email and Google settings in `.env`; behind HTTPS set `COOKIE_SECURE=true`.
+Postgres and Redis stay inside the Docker network (no host ports), so they won't clash with local installs. `bun run docker:logs` follows the app logs; `bun run docker:down` stops everything (add `-v` to delete the data volumes). Change ports, origins, email (`SMTP_URL` or `RESEND_API_KEY`) and Google settings in `.env`; behind HTTPS set `COOKIE_SECURE=true`. The API container runs the email worker; with several API replicas, each runs one and Redis ensures every email is sent once.
 
 ## Getting started (without Docker)
 
@@ -87,7 +88,7 @@ docker run -d --name xsam-test-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=p
 docker run -d --name xsam-test-redis -p 6381:6379 redis:7-alpine
 cd apps/backend && bun run test:db:prepare    # apply migrations to the test DB
 
-bun run test          # from the repo root: backend (171) + websocket (9) + frontend unit (27)
+bun run test          # from the repo root: backend (194) + websocket (9) + frontend unit (27)
 ```
 
 Override the database and Redis with `TEST_DATABASE_URL` and `TEST_REDIS_URL`.
@@ -112,6 +113,7 @@ The e2e suite covers: login redirects and open-redirect protection, httpOnly ses
 - **Account recovery.** Email verification and password-reset links are single-use, expiring, and stored only as SHA-256 hashes; a new link invalidates older ones. "Forgot password" gives the same response whether or not the account exists, and a reset signs out every session.
 - **Authentication.** HS256 JWTs pinned to issuer and audience. Each token carries a `tokenVersion`, so changing the password or using "sign out everywhere" revokes every existing token immediately. bcrypt hashes; login takes the same time whether or not the email exists; generic credential errors; password policy. Google sign-in only links to an existing account when Google has verified the email.
 - **Authorisation.** Every org-scoped query is filtered by the org id from the URL, never by an id supplied in the body. A resource from another org returns 404, not 403, so ids can't be probed. Role checks cover: last-owner protection, admins can't remove other admins, board visibility, the approval column gate, and separation of duties on expense approval.
+- **Email.** Notification emails only reach verified addresses; unsubscribe links are HMAC-signed per user and category (RFC 8058 one-click), and the unsubscribe page requires a click so mail scanners can't switch people's emails off.
 - **Uploads.** File type comes from the extension and must match the file's leading bytes (no trusting browser MIME types); SVG/HTML/executables are refused; files are stored under random ids, never the user's name; downloads send `Content-Disposition`, `nosniff` and a sandboxing CSP; access goes through the same org checks as the ticket.
 - **Invitations.** Tokens are 256-bit and random, and only their SHA-256 is stored. Accepting requires both the token and a matching account email. Links expire, are single-use, and are replaced when an invite is resent.
 - **Websockets.** A short-lived, single-use ticket from `POST /auth/ws-ticket` is used instead of putting the JWT in the URL. The server checks an origin allowlist, re-checks channel access on subscribe, drops subscriptions the moment access is revoked, and enforces per-socket rate limits, a payload cap and connection caps.

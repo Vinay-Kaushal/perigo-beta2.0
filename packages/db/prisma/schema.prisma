@@ -57,6 +57,14 @@ enum AuthTokenType {
   PASSWORD_RESET
 }
 
+enum NotificationCategory {
+  ASSIGNMENTS // tickets/tasks assigned to you, team queue, raised on your behalf
+  MENTIONS
+  TICKET_UPDATES // status, priority, comments and reassignment on tickets you follow
+  APPROVALS // join requests and expenses waiting for you
+  ACCOUNT // your join requests, invitations, expense decisions
+}
+
 enum ExpenseStatus {
   PENDING
   APPROVED
@@ -138,6 +146,7 @@ model User {
   auditLogs        AuditLog[]
   authTokens       AuthToken[]
   ticketAttachments TicketAttachment[]
+  notificationSettings NotificationSetting[]
 }
 
 model Organisation {
@@ -631,4 +640,19 @@ model TicketAttachment {
 
   @@index([ticketId, createdAt])
   @@index([commentId])
+}
+
+/** Per-user, per-category delivery choices. Missing rows fall back to the defaults in apps/backend/domain/notifications.ts. */
+model NotificationSetting {
+  id       String               @id @default(uuid())
+  userId   String
+  category NotificationCategory
+  inApp    Boolean
+  email    Boolean
+
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, category])
 }
