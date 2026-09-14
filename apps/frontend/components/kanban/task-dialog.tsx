@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
 import { Trash2, UserPlus, X } from "lucide-react";
 import { toast } from "sonner";
@@ -16,6 +16,8 @@ import { Skeleton } from "@/components/ui/feedback";
 import { PRIORITY_META } from "@/components/tickets/badges";
 import { relativeTime } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
+import { RichText } from "@/components/rich-text";
+import { MentionTextarea, type MentionTextareaHandle } from "@/components/mention-textarea";
 
 export function TaskDialog({ taskId, board, onClose, onChanged }: { taskId: string | null; board: Board; onClose: () => void; onChanged: () => void }) {
   const { user } = useAuth();
@@ -23,6 +25,9 @@ export function TaskDialog({ taskId, board, onClose, onChanged }: { taskId: stri
   const [draft, setDraft] = useState({ title: "", description: "" });
   const [comment, setComment] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const composer = useRef<MentionTextareaHandle>(null);
+  // Only people who can see this board are suggested (admins can see every board).
+  const candidates = useMemo(() => (board.members ?? []).map((m) => ({ id: m.userId, name: m.user.name, email: m.user.email, avatarUrl: m.user.avatarUrl })), [board.members]);
 
   useEffect(() => {
     if (task) setDraft({ title: task.title, description: task.description ?? "" });
@@ -84,7 +89,7 @@ export function TaskDialog({ taskId, board, onClose, onChanged }: { taskId: stri
                           )}
                         </span>
                       </div>
-                      <p className="mt-1 whitespace-pre-wrap text-[13px] text-ink">{c.content}</p>
+                      <RichText text={c.content} currentUserId={user?.id} className="mt-1 text-[13px] text-ink" />
                     </div>
                   </li>
                 ))}
@@ -93,11 +98,30 @@ export function TaskDialog({ taskId, board, onClose, onChanged }: { taskId: stri
                 className="mt-3 flex gap-2"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (!comment.trim()) return;
-                  run(() => api.post(`/tasks/${task.id}/comments`, { content: comment })).then(() => setComment(""));
+                  const content = composer.current?.serialize() ?? comment;
+                  if (!content.trim()) return;
+                  run(() => api.post(`/tasks/${task.id}/comments`, { content })).then(() => setComment(""));
                 }}
               >
-                <Input value={comment} maxLength={5000} onChange={(e) => setComment(e.target.value)} placeholder="Write a comment…" aria-label="Comment" />
+                <div className="flex-1">
+                  <MentionTextarea
+                    ref={composer}
+                    rows={1}
+                    className="min-h-[36px]"
+                    value={comment}
+                    maxLength={5000}
+                    onValueChange={setComment}
+                    candidates={candidates}
+                    placeholder="Write a comment… Type @ to mention"
+                    aria-label="Comment"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        (e.currentTarget.form as HTMLFormElement | null)?.requestSubmit();
+                      }
+                    }}
+                  />
+                </div>
                 <Button type="submit" disabled={!comment.trim()}>
                   Send
                 </Button>

@@ -48,6 +48,8 @@ enum TicketEventType {
   UNASSIGNED
   TEAM_CHANGED
   COMMENTED
+  ATTACHMENT_ADDED
+  ATTACHMENT_REMOVED
 }
 
 enum AuthTokenType {
@@ -135,6 +137,7 @@ model User {
   actedNotifications Notification[] @relation("NotificationActor")
   auditLogs        AuditLog[]
   authTokens       AuthToken[]
+  ticketAttachments TicketAttachment[]
 }
 
 model Organisation {
@@ -494,6 +497,7 @@ model Ticket {
   comments     TicketComment[]
   events       TicketEvent[]
   watchers     TicketWatcher[]
+  attachments  TicketAttachment[]
 
   @@unique([organisationId, number])
   @@index([organisationId, status])
@@ -512,8 +516,9 @@ model TicketComment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  ticket      Ticket             @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author      User               @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  attachments TicketAttachment[]
 
   @@index([ticketId, createdAt])
 }
@@ -601,4 +606,29 @@ model AuthToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, type])
+}
+
+/**
+ * A file uploaded to a ticket (optionally attached to one of its comments).
+ * The bytes live in object storage under `storageKey` — a random id, never the
+ * user-supplied file name.
+ */
+model TicketAttachment {
+  id          String  @id @default(uuid())
+  ticketId    String
+  commentId   String?
+  uploaderId  String?
+  fileName    String
+  contentType String
+  size        Int
+  storageKey  String  @unique
+
+  createdAt DateTime @default(now())
+
+  ticket   Ticket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  comment  TicketComment? @relation(fields: [commentId], references: [id], onDelete: SetNull)
+  uploader User?          @relation(fields: [uploaderId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+  @@index([commentId])
 }

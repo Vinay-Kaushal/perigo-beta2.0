@@ -44,6 +44,9 @@ FROM oven/bun:${BUN_VERSION}-slim AS runtime-base
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=server-src --chown=bun:bun /app /app
+# Attachment storage; mount a volume here so files survive container restarts.
+RUN mkdir -p /data/uploads && chown bun:bun /data/uploads
+ENV UPLOAD_DIR=/data/uploads
 USER bun
 
 FROM runtime-base AS tools

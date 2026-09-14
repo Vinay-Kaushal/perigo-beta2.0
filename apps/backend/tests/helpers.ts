@@ -52,19 +52,20 @@ export interface ApiResponse<T = any> {
 export async function request<T = any>(
   method: string,
   path: string,
-  opts: { token?: string; body?: unknown; headers?: Record<string, string>; raw?: string } = {}
+  opts: { token?: string; body?: unknown; headers?: Record<string, string>; raw?: string | Uint8Array } = {}
 ): Promise<ApiResponse<T>> {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
-      ...(opts.body !== undefined || opts.raw !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(opts.body !== undefined || typeof opts.raw === "string" ? { "Content-Type": "application/json" } : {}),
       ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
       ...opts.headers,
     },
     body: opts.raw ?? (opts.body !== undefined ? JSON.stringify(opts.body) : undefined),
   });
   const contentType = res.headers.get("content-type") ?? "";
-  const text = contentType.includes("application/pdf") ? "" : await res.text();
+  const binary = contentType.includes("application/pdf") || contentType.startsWith("image/") || !!res.headers.get("content-disposition");
+  const text = binary ? "" : await res.text();
   let body: any = text;
   try {
     body = text ? JSON.parse(text) : undefined;

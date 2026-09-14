@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Bell, BellOff, ChevronDown, Copy, MoreHorizontal, Pencil, Trash2, UserPlus } from "lucide-react";
@@ -10,7 +10,11 @@ import { api, errorMessage } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useApi, useOrg } from "@/lib/hooks";
 import { useChannelEvents } from "@/lib/realtime";
-import type { Member, Priority, Team, TicketComment, TicketDetail, TicketEvent, TicketStatus, TicketType } from "@/lib/types";
+import type { Member, Priority, Team, TicketAttachment, TicketComment, TicketDetail, TicketEvent, TicketStatus, TicketType } from "@/lib/types";
+import { fromTokens, type MentionCandidate } from "@/lib/mentions";
+import { RichText } from "@/components/rich-text";
+import { MentionTextarea, type MentionTextareaHandle } from "@/components/mention-textarea";
+import { AttachmentChip, FileDropzone, PendingAttachmentChip, UploadProgress, useTicketUploads } from "@/components/tickets/attachments";
 import { Page } from "@/components/ui/page";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -59,6 +63,14 @@ function eventText(e: TicketEvent) {
       ) : (
         "removed the team"
       );
+    case "ATTACHMENT_ADDED":
+      return (
+        <>
+          attached <strong className="font-medium text-ink">{m.fileName}</strong>
+        </>
+      );
+    case "ATTACHMENT_REMOVED":
+      return <>removed the file {m.fileName}</>;
     case "UPDATED":
       return `updated ${(m.fields as string[] | undefined)?.map((f) => (f === "dueAt" ? "SLA due date" : f)).join(", ") ?? "details"}`;
     default:
@@ -94,6 +106,17 @@ export default function TicketDetailPage() {
   const [resolutionNote, setResolutionNote] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
+  const [composerFiles, setComposerFiles] = useState<TicketAttachment[]>([]);
+  const [editMentions, setEditMentions] = useState<MentionCandidate[]>([]);
+  const composer = useRef<MentionTextareaHandle>(null);
+  const descriptionEditor = useRef<MentionTextareaHandle>(null);
+
+  const candidates = useMemo<MentionCandidate[]>(
+    () => (members ?? []).map((m) => ({ id: m.userId, name: m.user.name, email: m.user.email, avatarUrl: m.user.avatarUrl })),
+    [members]
+  );
+  const ticketUploads = useTicketUploads(orgId, Number(number), () => reload());
+  const composerUploads = useTicketUploads(orgId, Number(number), (a) => setComposerFiles((f) => [...f, a]));
 
   // Tell me when someone else changes the ticket I'm looking at (the layout already refetches it).
   useChannelEvents(`org:${orgId}`, (e) => {
@@ -158,11 +181,13 @@ export default function TicketDetailPage() {
 
   async function postComment(e: React.FormEvent) {
     e.preventDefault();
-    if (!comment.trim()) return;
+    const body = composer.current?.serialize() ?? comment;
+    if (!body.trim() && !composerFiles.length) return;
     setPosting(true);
     try {
-      await api.post(`${key}/comments`, { body: comment });
+      await api.post(`${key}/comments`, { body, attachmentIds: composerFiles.map((f) => f.id) });
       setComment("");
+      setComposerFiles([]);
       await reload();
     } catch (err) {
       toast.error(errorMessage(err));
@@ -236,12 +261,23 @@ export default function TicketDetailPage() {
                 className="space-y-3"
                 onSubmit={async (e) => {
                   e.preventDefault();
-                  await patch({ title: draft.title, description: draft.description || null }, "Ticket updated");
+                  const description = descriptionEditor.current?.serialize() ?? draft.description;
+                  await patch({ title: draft.title, description: description || null }, "Ticket updated");
                   setEditing(false);
                 }}
               >
                 <Input value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} minLength={3} maxLength={200} required className="text-base font-semibold" aria-label="Title" />
-                <Textarea value={draft.description} onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))} rows={8} maxLength={20000} aria-label="Description" />
+                <MentionTextarea
+                  ref={descriptionEditor}
+                  value={draft.description}
+                  onValueChange={(description) => setDraft((d) => ({ ...d, description }))}
+                  candidates={candidates}
+                  initialMentions={editMentions}
+                  rows={8}
+                  maxLength={20000}
+                  aria-label="Description"
+                  placeholder="Describe the issue. Type @ to mention someone."
+                />
                 <div className="flex gap-2">
                   <Button type="submit" size="sm" loading={pending === "patch"}>
                     Save
@@ -256,7 +292,16 @@ export default function TicketDetailPage() {
                 <div className="flex items-start gap-2">
                   <h1 className="flex-1 text-xl font-semibold tracking-tight text-ink">{t.title}</h1>
                   {perms.canEdit && !["CLOSED", "CANCELLED"].includes(t.status) && (
-                    <Button variant="ghost" size="sm" onClick={() => (setDraft({ title: t.title, description: t.description ?? "" }), setEditing(true))}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        const { text, mentions } = fromTokens(t.description ?? "");
+                        setEditMentions(mentions);
+                        setDraft({ title: t.title, description: text });
+                        setEditing(true);
+                      }}
+                    >
                       <Pencil size={13} /> Edit
                     </Button>
                   )}
@@ -272,12 +317,46 @@ export default function TicketDetailPage() {
           {!editing && (
             <Card className="p-4">
               {t.description ? (
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{t.description}</p>
+                <RichText text={t.description} currentUserId={user?.id} className="text-sm leading-relaxed text-ink" />
               ) : (
                 <p className="text-sm italic text-ink-faint">No description provided.</p>
               )}
             </Card>
           )}
+
+          <section aria-label="Attachments" className="space-y-2">
+            {(() => {
+              const pendingIds = new Set(composerFiles.map((f) => f.id));
+              const files = t.attachments.filter((a) => !a.commentId && !pendingIds.has(a.id));
+              const open = !["CLOSED", "CANCELLED"].includes(t.status);
+              return (
+                <>
+                  <h2 className="text-sm font-semibold text-ink">
+                    Attachments {files.length > 0 && <span className="font-normal text-ink-faint">({files.length})</span>}
+                  </h2>
+                  {files.length > 0 && (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {files.map((a) => (
+                        <AttachmentChip
+                          key={a.id}
+                          orgId={orgId}
+                          ticketRef={t.number}
+                          attachment={a}
+                          onDelete={a.uploader?.id === user?.id || perms.canDelete ? () => run("attachment-del", () => api.delete(`${key}/attachments/${a.id}`), "File removed") : undefined}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  <UploadProgress pending={ticketUploads.pending} />
+                  {open ? (
+                    <FileDropzone onFiles={ticketUploads.upload} disabled={ticketUploads.busy} />
+                  ) : (
+                    files.length === 0 && <p className="text-[13px] text-ink-faint">No files.</p>
+                  )}
+                </>
+              );
+            })()}
+          </section>
 
           {t.resolutionNote && (
             <div className="rounded-lg border border-success/25 bg-success/5 p-4">
@@ -329,7 +408,14 @@ export default function TicketDetailPage() {
                           )}
                         </span>
                       </div>
-                      <p className="whitespace-pre-wrap px-3 py-2.5 text-sm leading-relaxed text-ink">{item.comment.body}</p>
+                      {item.comment.body && <RichText text={item.comment.body} currentUserId={user?.id} className="px-3 py-2.5 text-sm leading-relaxed text-ink" />}
+                      {item.comment.attachments.length > 0 && (
+                        <div className="grid gap-2 border-t border-border p-2 sm:grid-cols-2">
+                          {item.comment.attachments.map((a) => (
+                            <AttachmentChip key={a.id} orgId={orgId} ticketRef={t.number} attachment={a} />
+                          ))}
+                        </div>
+                      )}
                     </Card>
                   </li>
                 )
@@ -339,20 +425,40 @@ export default function TicketDetailPage() {
             <form onSubmit={postComment} className="mt-5 flex gap-3">
               <Avatar name={user?.name ?? "?"} src={user?.avatarUrl} size={28} />
               <div className="flex-1 space-y-2">
-                <Textarea
+                <MentionTextarea
+                  ref={composer}
                   rows={3}
                   maxLength={10000}
-                  placeholder="Add a comment… (⌘/Ctrl + Enter to send)"
+                  placeholder="Add a comment… Type @ to mention someone (⌘/Ctrl + Enter to send)"
                   value={comment}
-                  onChange={(e) => setComment(e.target.value)}
+                  onValueChange={setComment}
+                  candidates={candidates}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) postComment(e);
                   }}
                   aria-label="Comment"
                 />
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-ink-faint">Watchers are notified.</span>
-                  <Button type="submit" size="sm" loading={posting} disabled={!comment.trim()}>
+                {composerFiles.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {composerFiles.map((f) => (
+                      <PendingAttachmentChip
+                        key={f.id}
+                        attachment={f}
+                        onRemove={() => {
+                          setComposerFiles((list) => list.filter((x) => x.id !== f.id));
+                          api.delete(`${key}/attachments/${f.id}`).catch(() => {});
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+                <UploadProgress pending={composerUploads.pending} />
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    {!["CLOSED", "CANCELLED"].includes(t.status) && <FileDropzone compact onFiles={composerUploads.upload} disabled={composerUploads.busy} />}
+                    <span className="text-xs text-ink-faint">Watchers are notified.</span>
+                  </div>
+                  <Button type="submit" size="sm" loading={posting} disabled={composerUploads.busy || (!comment.trim() && !composerFiles.length)}>
                     Comment
                   </Button>
                 </div>

@@ -19,6 +19,10 @@ const envSchema = z.object({
   // set COOKIE_DOMAIN=.example.com there so the Next.js middleware can see the session.
   COOKIE_DOMAIN: z.string().optional(),
   COOKIE_SECURE: z.enum(["true", "false"]).optional(),
+  // Attachments are stored on local disk (mount a volume in production) under random keys.
+  UPLOAD_DIR: z.string().default("./uploads"),
+  ATTACHMENT_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  ATTACHMENTS_PER_TICKET_MAX: z.coerce.number().int().positive().default(50),
   BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(15).default(12),
   RESEND_API_KEY: z.string().optional(),
   MAIL_FROM: z.string().default("perigo <no-reply@perigo.local>"),

@@ -7,6 +7,7 @@ import { publishOrgEvent, publishUserEvent } from "../lib/eventBus";
 import { currentUser, requireVerifiedEmail } from "../middleware/auth";
 import { getMembership } from "../middleware/access";
 import { audit } from "../services/audit";
+import { deleteObjects } from "../lib/storage";
 
 const slugSchema = z
   .string()
@@ -96,7 +97,9 @@ export async function deleteOrganisation(req: Request, res: Response) {
   if (confirmSlug !== org.slug) throw badRequest("Confirmation does not match the organisation slug");
 
   const members = await prisma.organisationMember.findMany({ where: { organisationId: org.id }, select: { userId: true } });
+  const files = await prisma.ticketAttachment.findMany({ where: { ticket: { organisationId: org.id } }, select: { storageKey: true } });
   await prisma.organisation.delete({ where: { id: org.id } });
+  await deleteObjects(files.map((f) => f.storageKey));
   await Promise.all(members.map((m) => publishUserEvent(m.userId, "ACCESS_REVOKED", req.user!.id, { organisationId: org.id })));
   res.status(204).send();
 }

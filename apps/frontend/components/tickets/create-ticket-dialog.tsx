@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { api, errorMessage } from "@/lib/api";
@@ -8,10 +8,11 @@ import { useApi } from "@/lib/hooks";
 import type { Member, Priority, Team, Ticket, TicketType } from "@/lib/types";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Field, Input, Select, Textarea } from "@/components/ui/input";
+import { Field, Input, Select } from "@/components/ui/input";
 import { InlineAlert } from "@/components/ui/feedback";
 import { PRIORITY_META, TYPE_META } from "./badges";
 import { useAuth } from "@/lib/auth-context";
+import { MentionTextarea, type MentionTextareaHandle } from "@/components/mention-textarea";
 
 const SLA_COPY: Record<Priority, string> = { URGENT: "4 hours", HIGH: "1 day", MEDIUM: "3 days", LOW: "5 days" };
 
@@ -23,6 +24,8 @@ export function CreateTicketDialog({ orgId, open, onOpenChange }: { orgId: strin
   const [form, setForm] = useState({ title: "", description: "", type: "INCIDENT" as TicketType, priority: "MEDIUM" as Priority, category: "", assigneeId: "", teamId: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const description = useRef<MentionTextareaHandle>(null);
+  const candidates = useMemo(() => (members ?? []).map((m) => ({ id: m.userId, name: m.user.name, email: m.user.email, avatarUrl: m.user.avatarUrl })), [members]);
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   async function submit(e: React.FormEvent) {
@@ -32,7 +35,7 @@ export function CreateTicketDialog({ orgId, open, onOpenChange }: { orgId: strin
     try {
       const ticket = await api.post<Ticket>(`/organisations/${orgId}/tickets`, {
         title: form.title,
-        description: form.description || undefined,
+        description: description.current?.serialize() || undefined,
         type: form.type,
         priority: form.priority,
         category: form.category || undefined,
@@ -73,7 +76,16 @@ export function CreateTicketDialog({ orgId, open, onOpenChange }: { orgId: strin
           <Input id="t-title" autoFocus required minLength={3} maxLength={200} placeholder="e.g. VPN disconnects every 10 minutes" value={form.title} onChange={(e) => set("title", e.target.value)} />
         </Field>
         <Field label="Description" htmlFor="t-desc" className="sm:col-span-2">
-          <Textarea id="t-desc" rows={5} maxLength={20000} placeholder="What happened, who's affected, steps to reproduce…" value={form.description} onChange={(e) => set("description", e.target.value)} />
+          <MentionTextarea
+            ref={description}
+            id="t-desc"
+            rows={5}
+            maxLength={20000}
+            placeholder="What happened, who's affected, steps to reproduce… Type @ to mention someone."
+            value={form.description}
+            onValueChange={(v) => set("description", v)}
+            candidates={candidates}
+          />
         </Field>
         <Field label="Type" htmlFor="t-type">
           <Select id="t-type" value={form.type} onChange={(e) => set("type", e.target.value as TicketType)}>

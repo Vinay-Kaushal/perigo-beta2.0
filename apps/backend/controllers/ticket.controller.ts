@@ -9,6 +9,9 @@ import { currentUser } from "../middleware/auth";
 import { getMembership, isOrgAdmin } from "../middleware/access";
 import { audit } from "../services/audit";
 import { notify } from "../services/notifications";
+import { extractMentionIds, newMentionIds, stripMentionTokens } from "../lib/mentions";
+import { deleteObjects } from "../lib/storage";
+import { attachmentInclude, serialiseAttachment } from "./attachment.controller";
 import {
   DONE_STATUSES,
   OPEN_STATUSES,
@@ -44,7 +47,7 @@ const listInclude = {
 
 type ListTicket = Prisma.TicketGetPayload<{ include: typeof listInclude }>;
 
-async function orgPrefix(orgId: string) {
+export async function orgPrefix(orgId: string) {
   const org = await prisma.organisation.findUniqueOrThrow({ where: { id: orgId }, select: { ticketPrefix: true } });
   return org.ticketPrefix;
 }
@@ -53,10 +56,10 @@ function serialise<T extends Ticket>(ticket: T, prefix: string) {
   return { ...ticket, key: ticketKey(prefix, ticket.number), slaBreached: isSlaBreached(ticket) };
 }
 
-const ticketLink = (t: Pick<Ticket, "organisationId" | "number">) => `/orgs/${t.organisationId}/tickets/${t.number}`;
+export const ticketLink = (t: Pick<Ticket, "organisationId" | "number">) => `/orgs/${t.organisationId}/tickets/${t.number}`;
 
 /** :ticketRef accepts the per-org number ("42") or the uuid. Always scoped to the org. */
-async function loadTicket(req: Request) {
+export async function loadTicket(req: Request) {
   const membership = getMembership(req);
   const ref = param(req, "ticketRef");
   const where = /^\d{1,9}$/.test(ref)
@@ -82,9 +85,51 @@ async function assertOrgTeam(orgId: string, teamId: string) {
   return team;
 }
 
-async function watcherIds(ticketId: string) {
+export async function watcherIds(ticketId: string) {
   const rows = await prisma.ticketWatcher.findMany({ where: { ticketId }, select: { userId: true } });
   return rows.map((r) => r.userId);
+}
+
+const excerpt = (text: string) => {
+  const plain = stripMentionTokens(text);
+  return plain.length > 160 ? `${plain.slice(0, 157)}…` : plain;
+};
+
+/**
+ * Notifies org members mentioned by id (anyone else is silently ignored, so
+ * mentions can't be used to probe who exists) and makes them watchers.
+ * Returns the ids that were notified.
+ */
+async function notifyMentions(
+  ticket: Pick<Ticket, "id" | "organisationId" | "number" | "title">,
+  mentionIds: string[],
+  actor: { id: string; name: string },
+  where: "comment" | "description",
+  text: string
+) {
+  const ids = mentionIds.filter((id) => id !== actor.id);
+  if (!ids.length) return [];
+  const members = await prisma.organisationMember.findMany({
+    where: { organisationId: ticket.organisationId, userId: { in: ids } },
+    select: { userId: true },
+  });
+  const valid = members.map((m) => m.userId);
+  if (!valid.length) return [];
+
+  await prisma.ticketWatcher.createMany({
+    data: valid.map((userId) => ({ ticketId: ticket.id, userId })),
+    skipDuplicates: true,
+  });
+  const key = ticketKey(await orgPrefix(ticket.organisationId), ticket.number);
+  await notify(valid, {
+    type: "MENTIONED",
+    title: `${actor.name} mentioned you ${where === "comment" ? "in a comment on" : "in"} ${key}`,
+    body: excerpt(text),
+    link: ticketLink(ticket),
+    organisationId: ticket.organisationId,
+    actorId: actor.id,
+  });
+  return valid;
 }
 
 // ---------------------------------------------------------------- create
@@ -196,6 +241,10 @@ export async function createTicket(req: Request, res: Response) {
     });
   }
 
+  if (body.description) {
+    await notifyMentions(ticket, extractMentionIds(body.description), user, "description", body.description);
+  }
+
   const payload = serialise(ticket, prefix);
   await publishOrgEvent(orgId, "TICKET_CREATED", user.id, { id: ticket.id, number: ticket.number, key });
   res.status(201).json(payload);
@@ -299,7 +348,8 @@ export async function getTicket(req: Request, res: Response) {
       ...listInclude,
       createdBy: publicUser,
       watchers: { include: { user: publicUser }, orderBy: { createdAt: "asc" } },
-      comments: { include: { author: publicUser }, orderBy: { createdAt: "asc" } },
+      comments: { include: { author: publicUser, attachments: attachmentInclude }, orderBy: { createdAt: "asc" } },
+      attachments: { ...attachmentInclude, orderBy: { createdAt: "asc" } },
       events: { include: { actor: publicUser }, orderBy: { createdAt: "asc" } },
     },
   });
@@ -309,6 +359,8 @@ export async function getTicket(req: Request, res: Response) {
   res.json({
     ...serialise(ticket, prefix),
     watchers: ticket.watchers.map((w) => w.user),
+    attachments: ticket.attachments.map(serialiseAttachment),
+    comments: ticket.comments.map((c) => ({ ...c, attachments: c.attachments.map(serialiseAttachment) })),
     isWatching: ticket.watchers.some((w) => w.userId === membership.userId),
     permissions: {
       canEdit: canEditTicket(actor, ticket),
@@ -389,6 +441,10 @@ export async function updateTicket(req: Request, res: Response) {
       organisationId: ticket.organisationId,
       actorId: user.id,
     });
+  }
+
+  if (body.description) {
+    await notifyMentions(ticket, newMentionIds(ticket.description, body.description), user, "description", body.description);
   }
 
   await publishOrgEvent(ticket.organisationId, "TICKET_UPDATED", user.id, { id: ticket.id, number: ticket.number, key });
@@ -537,16 +593,33 @@ export async function changeTicketStatus(req: Request, res: Response) {
 
 const commentSchema = z.object({ body: z.string().trim().min(1).max(10_000) });
 
+const newCommentSchema = z
+  .object({
+    body: z.string().trim().max(10_000).default(""),
+    attachmentIds: z.array(z.string().uuid()).max(10).default([]),
+  })
+  .refine((c) => c.body.length > 0 || c.attachmentIds.length > 0, { message: "Write a comment or attach a file", path: ["body"] });
+
 export async function addTicketComment(req: Request, res: Response) {
   const user = currentUser(req);
   const { ticket } = await loadTicket(req);
-  const { body } = commentSchema.parse(req.body);
+  const { body, attachmentIds } = newCommentSchema.parse(req.body);
 
   const comment = await prisma.$transaction(async (tx) => {
     const c = await tx.ticketComment.create({
       data: { ticketId: ticket.id, authorId: user.id, body },
-      include: { author: publicUser },
     });
+    // Only the author's own, not-yet-linked uploads on this ticket can be attached. One conditional
+    // update both claims and verifies them, so two comments can't race for the same file; a
+    // mismatch throws and rolls the whole comment back.
+    const wanted = [...new Set(attachmentIds)];
+    if (wanted.length) {
+      const linked = await tx.ticketAttachment.updateMany({
+        where: { id: { in: wanted }, ticketId: ticket.id, uploaderId: user.id, commentId: null },
+        data: { commentId: c.id },
+      });
+      if (linked.count !== wanted.length) throw badRequest("Some attachments can't be added to this comment");
+    }
     await tx.ticketWatcher.upsert({
       where: { ticketId_userId: { ticketId: ticket.id, userId: user.id } },
       update: {},
@@ -560,21 +633,30 @@ export async function addTicketComment(req: Request, res: Response) {
         ...(!ticket.firstResponseAt && user.id !== ticket.requesterId ? { firstResponseAt: new Date() } : {}),
       },
     });
-    return c;
+    return tx.ticketComment.findUniqueOrThrow({
+      where: { id: c.id },
+      include: { author: publicUser, attachments: attachmentInclude },
+    });
   });
 
   const prefix = await orgPrefix(ticket.organisationId);
   const key = ticketKey(prefix, ticket.number);
-  await notify([ticket.requesterId, ticket.assigneeId, ...(await watcherIds(ticket.id))], {
-    type: "TICKET_COMMENTED",
-    title: `${user.name} commented on ${key}`,
-    body: body.length > 160 ? `${body.slice(0, 157)}…` : body,
-    link: ticketLink(ticket),
-    organisationId: ticket.organisationId,
-    actorId: user.id,
-  });
+  // Mentioned people get a "mentioned you" notification instead of the generic "commented" one.
+  const mentioned = await notifyMentions(ticket, extractMentionIds(body), user, "comment", body);
+  const fileNote = comment.attachments.length ? `📎 ${comment.attachments.map((a) => a.fileName).join(", ")}` : "";
+  await notify(
+    [ticket.requesterId, ticket.assigneeId, ...(await watcherIds(ticket.id))].filter((id) => !id || !mentioned.includes(id)),
+    {
+      type: "TICKET_COMMENTED",
+      title: `${user.name} commented on ${key}`,
+      body: body ? excerpt(body) : fileNote,
+      link: ticketLink(ticket),
+      organisationId: ticket.organisationId,
+      actorId: user.id,
+    }
+  );
   await publishOrgEvent(ticket.organisationId, "TICKET_COMMENTED", user.id, { id: ticket.id, number: ticket.number, key });
-  res.status(201).json(comment);
+  res.status(201).json({ ...comment, attachments: comment.attachments.map(serialiseAttachment) });
 }
 
 async function loadComment(req: Request) {
@@ -589,9 +671,14 @@ export async function updateTicketComment(req: Request, res: Response) {
   const { ticket, comment } = await loadComment(req);
   if (comment.authorId !== user.id) throw forbidden("You can only edit your own comments");
   const { body } = commentSchema.parse(req.body);
-  const updated = await prisma.ticketComment.update({ where: { id: comment.id }, data: { body }, include: { author: publicUser } });
+  const updated = await prisma.ticketComment.update({
+    where: { id: comment.id },
+    data: { body },
+    include: { author: publicUser, attachments: attachmentInclude },
+  });
+  await notifyMentions(ticket, newMentionIds(comment.body, body), user, "comment", body);
   await publishOrgEvent(ticket.organisationId, "TICKET_COMMENTED", user.id, { id: ticket.id, number: ticket.number });
-  res.json(updated);
+  res.json({ ...updated, attachments: updated.attachments.map(serialiseAttachment) });
 }
 
 export async function deleteTicketComment(req: Request, res: Response) {
@@ -627,7 +714,9 @@ export async function unwatchTicket(req: Request, res: Response) {
 
 export async function deleteTicket(req: Request, res: Response) {
   const { ticket } = await loadTicket(req);
+  const files = await prisma.ticketAttachment.findMany({ where: { ticketId: ticket.id }, select: { storageKey: true } });
   await prisma.ticket.delete({ where: { id: ticket.id } });
+  await deleteObjects(files.map((f) => f.storageKey));
   const prefix = await orgPrefix(ticket.organisationId);
   await audit(req, {
     organisationId: ticket.organisationId,

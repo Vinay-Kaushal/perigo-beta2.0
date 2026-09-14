@@ -9,6 +9,24 @@ import { currentUser } from "../middleware/auth";
 import { getMembership, isOrgAdmin, resolveBoardAccess } from "../middleware/access";
 import { notify } from "../services/notifications";
 import { POSITION_GAP, betweenPosition, nextPosition } from "../utils/position";
+import { extractMentionIds, newMentionIds, stripMentionTokens } from "../lib/mentions";
+
+/** Notifies mentioned users who can see the board; anyone else is silently ignored. */
+async function notifyTaskMentions(board: Board, task: { id: string; title: string }, ids: string[], actor: { id: string; name: string }, text: string) {
+  const allowed: string[] = [];
+  for (const id of ids) {
+    if (id !== actor.id && (await resolveBoardAccess(id, board.id))) allowed.push(id);
+  }
+  const plain = stripMentionTokens(text);
+  await notify(allowed, {
+    type: "MENTIONED",
+    title: `${actor.name} mentioned you on "${task.title}"`,
+    body: plain.length > 160 ? `${plain.slice(0, 157)}…` : plain,
+    link: `/boards/${board.id}?task=${task.id}`,
+    organisationId: board.organisationId,
+    actorId: actor.id,
+  });
+}
 
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
 
@@ -275,6 +293,7 @@ export async function addComment(req: Request, res: Response) {
     await tx.taskActivity.create({ data: { taskId: task.id, userId: user.id, type: "COMMENT_ADDED", metadata: { commentId: c.id } } });
     return c;
   });
+  await notifyTaskMentions(loadedTask(req).board, task, extractMentionIds(content), user, content);
   await publishBoardEvent(task.boardId, "COMMENT_ADDED", user.id, { id: comment.id, taskId: task.id });
   res.status(201).json(comment);
 }
@@ -302,6 +321,7 @@ export async function updateComment(req: Request, res: Response) {
   if (comment.userId !== user.id) throw forbidden("You can only edit your own comments");
   const { content } = commentSchema.parse(req.body);
   const updated = await prisma.comment.update({ where: { id: comment.id }, data: { content }, include: { user: publicUser } });
+  await notifyTaskMentions(loadedTask(req).board, task, newMentionIds(comment.content, content), user, content);
   await publishBoardEvent(task.boardId, "COMMENT_UPDATED", user.id, { id: comment.id, taskId: task.id });
   res.json(updated);
 }

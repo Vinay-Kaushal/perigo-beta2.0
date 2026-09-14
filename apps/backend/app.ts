@@ -32,7 +32,7 @@ export function createApp() {
       origin: (origin, cb) => cb(null, !origin || allowedOrigins.includes(origin)),
       credentials: true, // the browser session is an httpOnly cookie
       methods: ["GET", "POST", "PATCH", "DELETE"],
-      allowedHeaders: ["Authorization", "Content-Type", "X-Request-Id", "X-CSRF-Protection"],
+      allowedHeaders: ["Authorization", "Content-Type", "X-Request-Id", "X-CSRF-Protection", "X-File-Name"],
       exposedHeaders: ["X-Request-Id", "RateLimit-Remaining", "Retry-After"],
       maxAge: 600,
     })

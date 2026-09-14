@@ -17,8 +17,10 @@ import * as goals from "../controllers/goal.controller";
 import * as analytics from "../controllers/analytics.controller";
 import * as dashboard from "../controllers/dashboard.controller";
 import * as notifications from "../controllers/notification.controller";
+import * as attachments from "../controllers/attachment.controller";
 
 const ADMIN = ["OWNER", "ADMIN"] as const;
+const uploadLimiter = rateLimit({ name: "upload", windowSec: 60, max: () => 60, key: (req) => req.user!.id });
 
 // ---------------------------------------------------------------- public (no token)
 
@@ -108,6 +110,9 @@ org.post("/tickets/:ticketRef/status", h(tickets.changeTicketStatus));
 org.post("/tickets/:ticketRef/watch", h(tickets.watchTicket));
 org.delete("/tickets/:ticketRef/watch", h(tickets.unwatchTicket));
 org.post("/tickets/:ticketRef/comments", h(tickets.addTicketComment));
+org.post("/tickets/:ticketRef/attachments", uploadLimiter, h(attachments.uploadAttachment));
+org.get("/tickets/:ticketRef/attachments/:attachmentId", h(attachments.downloadAttachment));
+org.delete("/tickets/:ticketRef/attachments/:attachmentId", h(attachments.deleteAttachment));
 org.patch("/tickets/:ticketRef/comments/:commentId", h(tickets.updateTicketComment));
 org.delete("/tickets/:ticketRef/comments/:commentId", h(tickets.deleteTicketComment));
 

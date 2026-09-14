@@ -8,7 +8,8 @@ const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline' https://accounts.google.com${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline' https://accounts.google.com",
-  "img-src 'self' data: blob: https:",
+  // Attachment thumbnails are served by the API.
+  `img-src 'self' data: blob: https: ${apiUrl}`,
   "font-src 'self' data:",
   `connect-src 'self' ${apiUrl} ${wsUrl} https://accounts.google.com${isDev ? " ws://localhost:*" : ""}`,
   "frame-src https://accounts.google.com",

@@ -57,6 +57,8 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       MAIL_FROM: ${MAIL_FROM:-perigo <no-reply@perigo.local>}
       RATE_LIMIT_AUTH_MAX: ${RATE_LIMIT_AUTH_MAX:-10}
+    volumes:
+      - uploads:/data/uploads
     ports:
       - "${API_PORT:-4000}:4000"
     depends_on:
@@ -95,3 +97,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  uploads:

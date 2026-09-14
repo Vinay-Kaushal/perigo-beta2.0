@@ -10,7 +10,14 @@ if (!/test/i.test(testDb)) {
   throw new Error(`Refusing to run tests against a database whose name doesn't contain "test": ${testDb}`);
 }
 
+import { mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import path from "path";
+
 Object.assign(process.env, {
+  UPLOAD_DIR: mkdtempSync(path.join(tmpdir(), "perigo-uploads-")),
+  ATTACHMENT_MAX_BYTES: String(64 * 1024),
+  ATTACHMENTS_PER_TICKET_MAX: "5",
   NODE_ENV: "test",
   DATABASE_URL: testDb,
   REDIS_URL: testRedis,

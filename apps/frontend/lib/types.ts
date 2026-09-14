@@ -111,17 +111,30 @@ export interface Ticket {
   _count?: { comments: number };
 }
 
+export interface TicketAttachment {
+  id: string;
+  ticketId: string;
+  commentId: string | null;
+  fileName: string;
+  contentType: string;
+  size: number;
+  isImage: boolean;
+  createdAt: string;
+  uploader: User | null;
+}
+
 export interface TicketComment {
   id: string;
   body: string;
   createdAt: string;
   updatedAt: string;
   author: User;
+  attachments: TicketAttachment[];
 }
 
 export interface TicketEvent {
   id: string;
-  type: "CREATED" | "UPDATED" | "STATUS_CHANGED" | "PRIORITY_CHANGED" | "ASSIGNED" | "UNASSIGNED" | "TEAM_CHANGED" | "COMMENTED";
+  type: "CREATED" | "UPDATED" | "STATUS_CHANGED" | "PRIORITY_CHANGED" | "ASSIGNED" | "UNASSIGNED" | "TEAM_CHANGED" | "COMMENTED" | "ATTACHMENT_ADDED" | "ATTACHMENT_REMOVED";
   metadata: any;
   createdAt: string;
   actor: User | null;
@@ -133,6 +146,7 @@ export interface TicketDetail extends Ticket {
   isWatching: boolean;
   comments: TicketComment[];
   events: TicketEvent[];
+  attachments: TicketAttachment[];
   permissions: { canEdit: boolean; canAssign: boolean; canDelete: boolean; allowedStatuses: TicketStatus[] };
 }
 
