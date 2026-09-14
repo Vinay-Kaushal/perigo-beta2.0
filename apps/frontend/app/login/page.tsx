@@ -1,20 +1,20 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
-import { ApiError } from "@/lib/api";
+import { errorMessage, safeRedirect } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card } from "@/components/ui/card";
-import { GoogleSignInButton } from "@/components/google-signin-button";
+import { Field, Input } from "@/components/ui/input";
+import { InlineAlert } from "@/components/ui/feedback";
 import { AuthLayout } from "@/components/auth-layout";
+import { GoogleSignInButton } from "@/components/google-signin-button";
 
-export default function LoginPage() {
+function LoginForm() {
   const { login } = useAuth();
   const router = useRouter();
+  const next = safeRedirect(useSearchParams().get("next"));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -26,65 +26,57 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       await login(email, password);
-      router.push("/dashboard");
+      router.replace(next);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong");
-    } finally {
+      setError(errorMessage(err));
       setSubmitting(false);
     }
   }
 
   return (
-    <AuthLayout>
-      <h1 className="mb-1 text-xl font-medium text-ink">Welcome back</h1>
-      <p className="mb-6 text-sm text-ink-faint">Sign in to continue to your workspace.</p>
-
-      <Card className="p-5">
-        <form onSubmit={onSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              type="email"
-              autoComplete="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
+    <AuthLayout title="Sign in" subtitle="Welcome back. Sign in to your workspace.">
+      <form onSubmit={onSubmit} className="space-y-4" noValidate>
+        <Field label="Work email" htmlFor="email">
+          <Input id="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
+        </Field>
+        <Field
+          label="Password"
+          htmlFor="password"
+          hint={
+            <Link href="/forgot-password" className="font-medium text-accent-ink hover:underline">
+              Forgot password?
+            </Link>
+          }
+        >
+          <Input id="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+        </Field>
+        {error && <InlineAlert tone="danger">{error}</InlineAlert>}
+        <Button type="submit" size="lg" loading={submitting} className="w-full">
+          Sign in
+        </Button>
+      </form>
+      {process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID && (
+        <>
+          <div className="my-6 flex items-center gap-3 text-xs text-ink-faint">
+            <div className="h-px flex-1 bg-border" /> or <div className="h-px flex-1 bg-border" />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="password">Password</Label>
-            <Input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-
-          {error && <p className="text-sm text-urgent">{error}</p>}
-
-          <Button type="submit" disabled={submitting} className="w-full">
-            {submitting ? "Signing in…" : "Sign in"}
-          </Button>
-        </form>
-
-        <div className="my-5 flex items-center gap-3">
-          <div className="h-px flex-1 bg-border" />
-          <span className="text-xs text-ink-faint">or</span>
-          <div className="h-px flex-1 bg-border" />
-        </div>
-        <GoogleSignInButton />
-      </Card>
-
-      <p className="mt-6 text-center text-sm text-ink-muted">
-        Don&apos;t have an account?{" "}
-        <Link href="/register" className="text-accent hover:text-accent-hover">
-          Create one
+          <GoogleSignInButton next={next} />
+        </>
+      )}
+      <p className="mt-8 text-center text-sm text-ink-muted">
+        New to perigo?{" "}
+        <Link href={`/register${next !== "/dashboard" ? `?next=${encodeURIComponent(next)}` : ""}`} className="font-medium text-accent-ink hover:underline">
+          Create an account
         </Link>
       </p>
     </AuthLayout>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
   );
 }

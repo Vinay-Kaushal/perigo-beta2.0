@@ -1,15 +1,8 @@
 # websocket
 
-To install dependencies:
+Realtime fan-out service (Bun native WebSockets + Redis pub/sub). See the [root README](../../README.md).
 
 ```bash
-bun install
+bun run dev    # start on :4001
+bun run test   # needs the test Postgres/Redis, see root README
 ```
-
-To run:
-
-```bash
-bun run index.ts
-```
-
-This project was created using `bun init` in bun v1.3.14. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.

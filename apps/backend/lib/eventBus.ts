@@ -1,62 +1,42 @@
-import Redis from "ioredis";
+import { redis } from "./redis";
 
 /**
- * The backend and the websocket server are separate deployable services
- * (separate folders / separate processes in the turborepo). They don't
- * share memory, so we can't just call `io.emit(...)` from an Express
- * route handler.
+ * The backend and the websocket server are separate processes, so the
+ * backend publishes small "facts" to Redis and the websocket service fans
+ * them out to the sockets in the matching room:
  *
- * Instead the backend publishes a small "fact" (what changed, on which
- * board) to Redis, and the websocket service subscribes to those channels
- * and rebroadcasts to the sockets in the relevant board room. This also
- * means the websocket service can be scaled to N instances later without
- * the backend caring.
+ *   board:<id>  — kanban changes, delivered to people viewing that board
+ *   org:<id>    — service-desk / membership changes, for everyone in the org
+ *   user:<id>   — personal notifications and access revocations
+ *
+ * Publishing is best-effort: a Redis blip must never fail the HTTP request
+ * that already committed to the database.
  */
-const publisher = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379");
+export type RealtimeScope = "board" | "org" | "user";
 
-export type BoardEventType =
-  | "TASK_CREATED"
-  | "TASK_UPDATED"
-  | "TASK_MOVED"
-  | "TASK_DELETED"
-  | "TASK_ASSIGNEE_CHANGED"
-  | "STATUS_CREATED"
-  | "STATUS_UPDATED"
-  | "STATUS_REORDERED"
-  | "STATUS_DELETED"
-  | "COMMENT_ADDED"
-  | "COMMENT_UPDATED"
-  | "COMMENT_DELETED"
-  | "BOARD_UPDATED"
-  | "MEMBER_ADDED"
-  | "MEMBER_REMOVED";
-
-interface BoardEventPayload {
-  boardId: string;
-  type: BoardEventType;
-  actorId: string;
+export interface RealtimeEvent {
+  scope: RealtimeScope;
+  targetId: string;
+  type: string;
+  actorId: string | null;
   data: unknown;
   timestamp: string;
 }
 
-export async function publishBoardEvent(
-  boardId: string,
-  type: BoardEventType,
-  actorId: string,
-  data: unknown
-) {
-  const payload: BoardEventPayload = {
-    boardId,
-    type,
-    actorId,
-    data,
-    timestamp: new Date().toISOString(),
-  };
-
-  // Channel is namespaced per board so the websocket service can, if it
-  // ever needs to, subscribe selectively instead of always doing
-  // pattern-subscribe on `board:*`.
-  await publisher.publish(`board:${boardId}`, JSON.stringify(payload));
+async function publish(scope: RealtimeScope, targetId: string, type: string, actorId: string | null, data: unknown) {
+  const payload: RealtimeEvent = { scope, targetId, type, actorId, data, timestamp: new Date().toISOString() };
+  try {
+    await redis().publish(`${scope}:${targetId}`, JSON.stringify(payload));
+  } catch (err) {
+    console.error(`[eventBus] failed to publish ${type} to ${scope}:${targetId}`, err);
+  }
 }
 
-export { publisher };
+export const publishBoardEvent = (boardId: string, type: string, actorId: string | null, data: unknown) =>
+  publish("board", boardId, type, actorId, data);
+
+export const publishOrgEvent = (orgId: string, type: string, actorId: string | null, data: unknown) =>
+  publish("org", orgId, type, actorId, data);
+
+export const publishUserEvent = (userId: string, type: string, actorId: string | null, data: unknown) =>
+  publish("user", userId, type, actorId, data);

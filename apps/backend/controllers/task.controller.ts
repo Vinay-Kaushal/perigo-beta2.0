@@ -1,129 +1,155 @@
-import type { Response } from "express";
+import type { Request, Response } from "express";
 import { z } from "zod";
+import type { Board, Prisma } from "db/client";
 import { prisma } from "../lib/prisma";
-import type { AuthedRequest } from "../middleware/auth";
+import { publicUser } from "../lib/selects";
+import { badRequest, conflict, forbidden, notFound, param } from "../lib/http";
 import { publishBoardEvent } from "../lib/eventBus";
-import { nextPosition, betweenPosition, needsRebalance, POSITION_GAP } from "../utils/position";
+import { currentUser } from "../middleware/auth";
+import { getMembership, isOrgAdmin, resolveBoardAccess } from "../middleware/access";
+import { notify } from "../services/notifications";
+import { POSITION_GAP, betweenPosition, nextPosition } from "../utils/position";
+
+const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
+
+const taskInclude = {
+  assignees: { include: { user: publicUser } },
+  status: true,
+  _count: { select: { comments: true } },
+} satisfies Prisma.TaskInclude;
+
+function loadedTask(req: Request) {
+  if (!req.task || !req.board) throw notFound("Task not found");
+  return { task: req.task, board: req.board };
+}
+
+async function assertStatusOnBoard(statusId: string, boardId: string) {
+  const status = await prisma.taskStatus.findFirst({ where: { id: statusId, boardId } });
+  if (!status) throw badRequest("Column must belong to this board");
+  return status;
+}
+
+/** Assignees must be able to see the board — otherwise they'd be assigned work they can't open. */
+async function assertAssignable(userIds: string[], board: Board) {
+  for (const userId of new Set(userIds)) {
+    if (!(await resolveBoardAccess(userId, board.id))) {
+      throw badRequest("Assignees must have access to this board");
+    }
+  }
+}
 
 const createTaskSchema = z.object({
   statusId: z.string().uuid(),
-  title: z.string().min(1).max(200),
-  description: z.string().max(10_000).optional(),
-  priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).default("MEDIUM"),
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(10_000).optional(),
+  priority: z.enum(PRIORITIES).default("MEDIUM"),
   dueDate: z.coerce.date().optional(),
-  assigneeIds: z.array(z.string().uuid()).optional(),
+  assigneeIds: z.array(z.string().uuid()).max(20).optional(),
 });
 
-export async function createTask(req: AuthedRequest, res: Response) {
+export async function createTask(req: Request, res: Response) {
+  const user = currentUser(req);
+  const board = req.board!;
   const body = createTaskSchema.parse(req.body);
-  const boardId = req.params.boardId;
 
-  if (!boardId) {
-    return res.status(400).json({ error: "Board ID is required" });
-  }
+  await assertStatusOnBoard(body.statusId, board.id);
+  if (body.assigneeIds?.length) await assertAssignable(body.assigneeIds, board);
 
-  const last = await prisma.task.findFirst({
-    where: { statusId: body.statusId },
-    orderBy: { position: "desc" },
-  });
+  const last = await prisma.task.findFirst({ where: { statusId: body.statusId }, orderBy: { position: "desc" } });
+  const assigneeIds = [...new Set(body.assigneeIds ?? [])];
 
   const task = await prisma.$transaction(async (tx) => {
     const created = await tx.task.create({
       data: {
-        boardId,
+        boardId: board.id,
         statusId: body.statusId,
         title: body.title,
         description: body.description,
         priority: body.priority,
         dueDate: body.dueDate,
-        position: nextPosition(last?.position ?? null),
-        assignees: body.assigneeIds
-          ? { create: body.assigneeIds.map((userId) => ({ userId })) }
-          : undefined,
+        position: nextPosition(last?.position),
+        assignees: assigneeIds.length ? { create: assigneeIds.map((userId) => ({ userId })) } : undefined,
       },
-      include: { assignees: { include: { user: true } }, status: true },
+      include: taskInclude,
     });
-
-    await tx.taskActivity.create({
-      data: { taskId: created.id, userId: req.user.id, type: "TASK_CREATED" },
-    });
-
+    await tx.taskActivity.create({ data: { taskId: created.id, userId: user.id, type: "TASK_CREATED" } });
     return created;
   });
 
-  await publishBoardEvent(boardId as string, "TASK_CREATED", req.user.id, task);
+  await notify(assigneeIds, {
+    type: "TASK_ASSIGNED",
+    title: `${user.name} assigned you "${task.title}"`,
+    body: board.name,
+    link: `/boards/${board.id}?task=${task.id}`,
+    organisationId: board.organisationId,
+    actorId: user.id,
+  });
+  await publishBoardEvent(board.id, "TASK_CREATED", user.id, { id: task.id });
   res.status(201).json(task);
 }
 
 const listTasksQuerySchema = z.object({
   statusId: z.string().uuid().optional(),
   assigneeId: z.string().uuid().optional(),
-  priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).optional(),
+  priority: z.enum(PRIORITIES).optional(),
 });
 
-export async function listTasks(req: AuthedRequest, res: Response) {
+export async function listTasks(req: Request, res: Response) {
+  const board = req.board!;
   const query = listTasksQuerySchema.parse(req.query);
-
   const tasks = await prisma.task.findMany({
     where: {
-      boardId: req.params.boardId as string,
+      boardId: board.id,
       statusId: query.statusId,
       priority: query.priority,
       assignees: query.assigneeId ? { some: { userId: query.assigneeId } } : undefined,
     },
-    include: { assignees: { include: { user: true } }, status: true, _count: { select: { comments: true } } },
+    include: taskInclude,
     orderBy: { position: "asc" },
   });
-
   res.json(tasks);
 }
 
-export async function getTask(req: AuthedRequest, res: Response) {
-  const task = await prisma.task.findUnique({
-    where: { id: req.params.taskId },
+export async function getTask(req: Request, res: Response) {
+  const { task } = loadedTask(req);
+  const full = await prisma.task.findUniqueOrThrow({
+    where: { id: task.id },
     include: {
-      assignees: { include: { user: true } },
-      status: true,
-      comments: { include: { user: true }, orderBy: { createdAt: "asc" } },
-      activities: { include: { user: true }, orderBy: { createdAt: "desc" }, take: 50 },
+      ...taskInclude,
+      comments: { include: { user: publicUser }, orderBy: { createdAt: "asc" } },
+      activities: { include: { user: publicUser }, orderBy: { createdAt: "desc" }, take: 50 },
     },
   });
-  if (!task) return res.status(404).json({ error: "Task not found" });
-  res.json(task);
+  res.json(full);
 }
 
 const updateTaskSchema = z.object({
-  title: z.string().min(1).max(200).optional(),
-  description: z.string().max(10_000).nullable().optional(),
-  priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).optional(),
+  title: z.string().trim().min(1).max(200).optional(),
+  description: z.string().trim().max(10_000).nullable().optional(),
+  priority: z.enum(PRIORITIES).optional(),
   dueDate: z.coerce.date().nullable().optional(),
 });
 
-export async function updateTask(req: AuthedRequest, res: Response) {
+export async function updateTask(req: Request, res: Response) {
+  const user = currentUser(req);
+  const { task } = loadedTask(req);
   const body = updateTaskSchema.parse(req.body);
 
-  const task = await prisma.$transaction(async (tx) => {
-    const updated = await tx.task.update({ where: { id: req.params.taskId }, data: body });
+  const updated = await prisma.$transaction(async (tx) => {
+    const t = await tx.task.update({ where: { id: task.id }, data: body, include: taskInclude });
     await tx.taskActivity.create({
-      data: {
-        taskId: updated.id,
-        userId: req.user.id,
-        type: "TASK_UPDATED",
-        metadata: body as any,
-      },
+      data: { taskId: task.id, userId: user.id, type: "TASK_UPDATED", metadata: { fields: Object.keys(body) } },
     });
-    return updated;
+    return t;
   });
 
-  await publishBoardEvent(task.boardId, "TASK_UPDATED", req.user.id, task);
-  res.json(task);
+  await publishBoardEvent(task.boardId, "TASK_UPDATED", user.id, { id: task.id });
+  res.json(updated);
 }
 
 /**
- * The core Trello/Jira interaction: dragging a card to a new column and/or
- * a new spot within a column. Takes the *neighbours* the card was dropped
- * between rather than a raw index, which is what makes gap-based
- * positioning work and keeps concurrent drags from stomping each other.
+ * Drag-and-drop: the client sends the target column and the neighbours the
+ * card landed between. Neighbours must be in that column on this board.
  */
 const moveTaskSchema = z.object({
   statusId: z.string().uuid(),
@@ -131,153 +157,162 @@ const moveTaskSchema = z.object({
   afterTaskId: z.string().uuid().nullable().optional(),
 });
 
-export async function moveTask(req: AuthedRequest, res: Response) {
+export async function moveTask(req: Request, res: Response) {
+  const user = currentUser(req);
+  const { task, board } = loadedTask(req);
   const body = moveTaskSchema.parse(req.body);
-  const taskId = req.params.taskId;
-  if (!taskId) {
-    return res.status(400).json({ error: "Task ID is required" });
+
+  const target = await assertStatusOnBoard(body.statusId, board.id);
+
+  // Approval gate: only owners/admins can land a card in APPROVED/REJECTED.
+  if ((target.type === "APPROVED" || target.type === "REJECTED") && !isOrgAdmin(getMembership(req).role)) {
+    throw forbidden("Only an owner or admin can approve or reject a task");
   }
 
-  const existing = await prisma.task.findUnique({ where: { id: taskId } });
-  if (!existing) return res.status(404).json({ error: "Task not found" });
-
-  // Approval gate: only board OWNER/ADMIN can move a task into an
-  // APPROVED or REJECTED column — regular members can move a card
-  // anywhere else (including *into* review), but the final call is
-  // reserved for people with elevated org access on this board.
-  const targetStatus = await prisma.taskStatus.findUnique({ where: { id: body.statusId } });
-  if (!targetStatus) return res.status(404).json({ error: "Target status not found" });
-
-  if (targetStatus.type === "APPROVED" || targetStatus.type === "REJECTED") {
-    const orgMembership = (req as any).orgMembership;
-    if (!orgMembership || orgMembership.role === "MEMBER") {
-      return res.status(403).json({ error: "Only an owner or admin can approve or reject a task" });
-    }
+  const neighbour = (id: string | null | undefined) =>
+    id && id !== task.id ? prisma.task.findFirst({ where: { id, statusId: target.id } }) : Promise.resolve(null);
+  const [before, after] = await Promise.all([neighbour(body.beforeTaskId), neighbour(body.afterTaskId)]);
+  if ((body.beforeTaskId && body.beforeTaskId !== task.id && !before) || (body.afterTaskId && body.afterTaskId !== task.id && !after)) {
+    throw conflict("The board changed while you were dragging — refresh and try again");
   }
 
-  const [before, after] = await Promise.all([
-    body.beforeTaskId ? prisma.task.findUnique({ where: { id: body.beforeTaskId } }) : null,
-    body.afterTaskId ? prisma.task.findUnique({ where: { id: body.afterTaskId } }) : null,
-  ]);
+  const statusChanged = task.statusId !== target.id;
 
-  let position = betweenPosition(before?.position, after?.position);
-
-  const task = await prisma.$transaction(async (tx) => {
-    // Two cards dragged into the exact same gap repeatedly will eventually
-    // collide on an Int position — detect it and fall back to a full
-    // reindex of that column so drags never silently fail.
-    if (before && after && needsRebalance(before.position, after.position)) {
-      const siblings = await tx.task.findMany({
-        where: { statusId: body.statusId },
-        orderBy: { position: "asc" },
-      });
-      await Promise.all(
-        siblings.map((s, i) =>
-          tx.task.update({ where: { id: s.id }, data: { position: (i + 1) * POSITION_GAP } })
-        )
+  const updated = await prisma.$transaction(async (tx) => {
+    let position = betweenPosition(before?.position, after?.position);
+    if (position === null) {
+      // No integer gap left between the neighbours — renumber the column once.
+      const siblings = (await tx.task.findMany({ where: { statusId: target.id }, orderBy: { position: "asc" } })).filter(
+        (s) => s.id !== task.id
       );
-      position = (siblings.findIndex((s) => s.id === after.id) + 0.5) * POSITION_GAP;
+      const insertAt = before ? siblings.findIndex((s) => s.id === before.id) + 1 : 0;
+      for (const [i, s] of siblings.entries()) {
+        const slot = i < insertAt ? i + 1 : i + 2;
+        await tx.task.update({ where: { id: s.id }, data: { position: slot * POSITION_GAP } });
+      }
+      position = (insertAt + 1) * POSITION_GAP;
     }
 
-    const statusChanged = existing.statusId !== body.statusId;
+    const completedAt =
+      target.type === "COMPLETED" ? (task.completedAt ?? new Date()) : statusChanged ? null : task.completedAt;
 
-    const updated = await tx.task.update({
-      where: { id: taskId },
-      data: {
-        statusId: body.statusId,
-        position,
-      },
-      include: { status: true, assignees: { include: { user: true } } },
+    const t = await tx.task.update({
+      where: { id: task.id },
+      data: { statusId: target.id, position, completedAt },
+      include: taskInclude,
     });
 
     if (statusChanged) {
       await tx.taskActivity.create({
-        data: {
-          taskId,
-          userId: req.user.id,
-          type: "TASK_STATUS_CHANGED",
-          metadata: { from: existing.statusId, to: body.statusId },
-        },
+        data: { taskId: task.id, userId: user.id, type: "TASK_STATUS_CHANGED", metadata: { from: task.statusId, to: target.id, toName: target.name } },
       });
-
-      // Auto-stamp completedAt when a task lands in a COMPLETED-type column,
-      // clear it if it's dragged back out. Cheap UX win, easy to rip out.
-      if (updated.status.type === "COMPLETED" && !existing.completedAt) {
-        await tx.task.update({ where: { id: taskId }, data: { completedAt: new Date() } });
-      } else if (updated.status.type !== "COMPLETED" && existing.completedAt) {
-        await tx.task.update({ where: { id: taskId }, data: { completedAt: null } });
-      }
     }
-
-    return updated;
+    return t;
   });
 
-  await publishBoardEvent(task.boardId, "TASK_MOVED", req.user.id, {
-    taskId: task.id,
-    statusId: task.statusId,
-    position: task.position,
-  });
-
-  res.json(task);
+  await publishBoardEvent(board.id, "TASK_MOVED", user.id, { id: task.id, statusId: updated.statusId, position: updated.position });
+  res.json(updated);
 }
 
-export async function deleteTask(req: AuthedRequest, res: Response) {
-  const task = await prisma.task.delete({ where: { id: req.params.taskId } });
-  await publishBoardEvent(task.boardId, "TASK_DELETED", req.user.id, { id: task.id });
+export async function deleteTask(req: Request, res: Response) {
+  const { task } = loadedTask(req);
+  await prisma.task.delete({ where: { id: task.id } });
+  await publishBoardEvent(task.boardId, "TASK_DELETED", req.user!.id, { id: task.id });
   res.status(204).send();
 }
 
 const assigneeSchema = z.object({ userId: z.string().uuid() });
 
-export async function addAssignee(req: AuthedRequest, res: Response) {
-  const taskId = req.params.taskId;
-  if (!taskId) {
-    return res.status(400).json({ message: "Task ID is required." });
-  }
+export async function addAssignee(req: Request, res: Response) {
+  const user = currentUser(req);
+  const { task, board } = loadedTask(req);
+  const { userId } = assigneeSchema.parse(req.body);
+  await assertAssignable([userId], board);
 
-  const body = assigneeSchema.parse(req.body);
-  const assignee = await prisma.taskAssignee.create({
-    data: { taskId, userId: body.userId },
-    include: { user: true },
+  const assignee = await prisma.taskAssignee.upsert({
+    where: { taskId_userId: { taskId: task.id, userId } },
+    update: {},
+    create: { taskId: task.id, userId },
+    include: { user: publicUser },
   });
-
-  const task = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
   await prisma.taskActivity.create({
-    data: { taskId: task.id, userId: req.user.id, type: "TASK_ASSIGNED", metadata: { userId: body.userId } },
+    data: { taskId: task.id, userId: user.id, type: "TASK_ASSIGNED", metadata: { userId, name: assignee.user.name } },
   });
-  await publishBoardEvent(task.boardId, "TASK_ASSIGNEE_CHANGED", req.user.id, {
-    taskId: task.id,
-    assignee,
+  await notify([userId], {
+    type: "TASK_ASSIGNED",
+    title: `${user.name} assigned you "${task.title}"`,
+    body: board.name,
+    link: `/boards/${board.id}?task=${task.id}`,
+    organisationId: board.organisationId,
+    actorId: user.id,
   });
-
+  await publishBoardEvent(board.id, "TASK_ASSIGNEE_CHANGED", user.id, { id: task.id });
   res.status(201).json(assignee);
 }
 
-export async function removeAssignee(req: AuthedRequest, res: Response) {
-  const taskId = req.params.taskId;
-  const userId = req.params.userId;
+export async function removeAssignee(req: Request, res: Response) {
+  const user = currentUser(req);
+  const { task } = loadedTask(req);
+  const userId = param(req, "userId");
+  const result = await prisma.taskAssignee.deleteMany({ where: { taskId: task.id, userId } });
+  if (result.count === 0) throw notFound("That user isn't assigned to this task");
+  await prisma.taskActivity.create({ data: { taskId: task.id, userId: user.id, type: "TASK_UNASSIGNED", metadata: { userId } } });
+  await publishBoardEvent(task.boardId, "TASK_ASSIGNEE_CHANGED", user.id, { id: task.id });
+  res.status(204).send();
+}
 
-  if (!taskId || !userId) {
-    return res.status(400).json({ message: "Task ID and user ID are required." });
+// ---- comments
+
+const commentSchema = z.object({ content: z.string().trim().min(1).max(5000) });
+
+export async function addComment(req: Request, res: Response) {
+  const user = currentUser(req);
+  const { task } = loadedTask(req);
+  const { content } = commentSchema.parse(req.body);
+
+  const comment = await prisma.$transaction(async (tx) => {
+    const c = await tx.comment.create({ data: { taskId: task.id, userId: user.id, content }, include: { user: publicUser } });
+    await tx.taskActivity.create({ data: { taskId: task.id, userId: user.id, type: "COMMENT_ADDED", metadata: { commentId: c.id } } });
+    return c;
+  });
+  await publishBoardEvent(task.boardId, "COMMENT_ADDED", user.id, { id: comment.id, taskId: task.id });
+  res.status(201).json(comment);
+}
+
+export async function listComments(req: Request, res: Response) {
+  const { task } = loadedTask(req);
+  const comments = await prisma.comment.findMany({
+    where: { taskId: task.id },
+    include: { user: publicUser },
+    orderBy: { createdAt: "asc" },
+  });
+  res.json(comments);
+}
+
+async function loadComment(req: Request) {
+  const { task } = loadedTask(req);
+  const comment = await prisma.comment.findFirst({ where: { id: param(req, "commentId"), taskId: task.id } });
+  if (!comment) throw notFound("Comment not found");
+  return { task, comment };
+}
+
+export async function updateComment(req: Request, res: Response) {
+  const user = currentUser(req);
+  const { task, comment } = await loadComment(req);
+  if (comment.userId !== user.id) throw forbidden("You can only edit your own comments");
+  const { content } = commentSchema.parse(req.body);
+  const updated = await prisma.comment.update({ where: { id: comment.id }, data: { content }, include: { user: publicUser } });
+  await publishBoardEvent(task.boardId, "COMMENT_UPDATED", user.id, { id: comment.id, taskId: task.id });
+  res.json(updated);
+}
+
+export async function deleteComment(req: Request, res: Response) {
+  const user = currentUser(req);
+  const { task, comment } = await loadComment(req);
+  if (comment.userId !== user.id && !isOrgAdmin(getMembership(req).role)) {
+    throw forbidden("You can only delete your own comments");
   }
-
-  const task = await prisma.task.findUniqueOrThrow({ where: { id: taskId } });
-
-  await prisma.taskAssignee.delete({
-    where: { taskId_userId: { taskId, userId } },
-  });
-  await prisma.taskActivity.create({
-    data: {
-      taskId: task.id,
-      userId: req.user.id,
-      type: "TASK_UNASSIGNED",
-      metadata: { userId },
-    },
-  });
-  await publishBoardEvent(task.boardId, "TASK_ASSIGNEE_CHANGED", req.user.id, {
-    taskId: task.id,
-    removedUserId: userId,
-  });
-
+  await prisma.comment.delete({ where: { id: comment.id } });
+  await publishBoardEvent(task.boardId, "COMMENT_DELETED", user.id, { id: comment.id, taskId: task.id });
   res.status(204).send();
 }

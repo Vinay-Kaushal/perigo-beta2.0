@@ -1,15 +1,10 @@
 # backend
 
-To install dependencies:
+Express API for perigo. See the [root README](../../README.md) for setup, architecture and the security model.
 
 ```bash
-bun install
+bun run dev              # start with reload on :4000
+bun run test             # unit + integration tests (needs the test Postgres/Redis, see root README)
+bun run seed             # demo organisation "Acme Corp"
+bun run check-types
 ```
-
-To run:
-
-```bash
-bun run index.ts
-```
-
-This project was created using `bun init` in bun v1.3.14. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.

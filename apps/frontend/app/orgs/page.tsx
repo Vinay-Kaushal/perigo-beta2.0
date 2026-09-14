@@ -1,152 +1,181 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, ApiError } from "@/lib/api";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Building2, Plus, Users, LifeBuoy, Kanban } from "lucide-react";
+import { useSWRConfig } from "swr";
+import { api, errorMessage } from "@/lib/api";
+import { useApi } from "@/lib/hooks";
 import type { Organisation } from "@/lib/types";
-import { TopBar } from "@/components/top-bar";
+import { Page, PageHeader } from "@/components/ui/page";
 import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Dialog } from "@/components/ui/dialog";
-import { Plus, Building2 } from "lucide-react";
+import { Field, Input, Textarea } from "@/components/ui/input";
+import { EmptyState, InlineAlert, Skeleton } from "@/components/ui/feedback";
+import { titleCase } from "@/lib/utils";
 
-function slugify(name: string) {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
-}
+const slugify = (v: string) => v.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 
-export default function OrgsPage() {
-  const [orgs, setOrgs] = useState<Organisation[] | null>(null);
+function CreateOrgDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const router = useRouter();
+  const { mutate } = useSWRConfig();
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  async function refresh() {
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
     try {
-      setOrgs(await api.get<Organisation[]>("/organisations"));
+      const org = await api.post<Organisation>("/organisations", { name, slug, description: description || undefined });
+      await mutate("/organisations");
+      onOpenChange(false);
+      router.push(`/orgs/${org.id}`);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load organisations");
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
     }
   }
 
-  useEffect(() => {
-    refresh();
-  }, []);
-
   return (
-    <div className="min-h-screen">
-      <TopBar crumbs={[]} />
-
-      <div className="mx-auto max-w-3xl px-4 py-10">
-        <div className="mb-6 flex items-center justify-between">
-          <h1 className="text-lg font-medium text-ink">Your organisations</h1>
-          <Button size="sm" onClick={() => setDialogOpen(true)}>
-            <Plus size={15} /> New organisation
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Create organisation"
+      description="You'll be the owner. Invite your team next."
+      footer={
+        <>
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>
+            Cancel
           </Button>
-        </div>
-
-        {error && <p className="mb-4 text-sm text-urgent">{error}</p>}
-
-        {orgs === null ? (
-          <p className="text-sm text-ink-muted">Loading…</p>
-        ) : orgs.length === 0 ? (
-          <Card className="flex flex-col items-center gap-3 px-6 py-14 text-center">
-            <Building2 className="text-ink-faint" size={28} />
-            <p className="text-sm text-ink-muted">
-              You&apos;re not part of an organisation yet. Create one to start a board.
-            </p>
-            <Button size="sm" onClick={() => setDialogOpen(true)}>
-              <Plus size={15} /> New organisation
-            </Button>
-          </Card>
-        ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {orgs.map((org) => (
-              <Link key={org.id} href={`/orgs/${org.id}`}>
-                <Card interactive className="flex h-full flex-col gap-1 p-4">
-                  <div className="flex items-center gap-2">
-                    <Building2 size={16} className="text-accent" />
-                    <span className="font-medium text-ink">{org.name}</span>
-                  </div>
-                  {org.description && (
-                    <p className="line-clamp-2 text-sm text-ink-muted">{org.description}</p>
-                  )}
-                  <span className="mt-auto pt-2 text-xs text-ink-faint">{org.myRole}</span>
-                </Card>
-              </Link>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <CreateOrgDialog
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        onCreated={() => {
-          setDialogOpen(false);
-          refresh();
-        }}
-      />
-    </div>
+          <Button type="submit" form="create-org" loading={busy} disabled={!name.trim() || slug.length < 2}>
+            Create
+          </Button>
+        </>
+      }
+    >
+      <form id="create-org" onSubmit={submit} className="space-y-4">
+        <Field label="Name" htmlFor="org-name">
+          <Input
+            id="org-name"
+            autoFocus
+            required
+            maxLength={120}
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (!slugTouched) setSlug(slugify(e.target.value));
+            }}
+            placeholder="Acme Inc."
+          />
+        </Field>
+        <Field label="URL slug" htmlFor="org-slug" hint="Lowercase letters, numbers and dashes.">
+          <Input
+            id="org-slug"
+            required
+            value={slug}
+            onChange={(e) => {
+              setSlugTouched(true);
+              setSlug(slugify(e.target.value));
+            }}
+          />
+        </Field>
+        <Field label="Description" htmlFor="org-desc">
+          <Textarea id="org-desc" rows={2} maxLength={500} value={description} onChange={(e) => setDescription(e.target.value)} />
+        </Field>
+        {error && <InlineAlert tone="danger">{error}</InlineAlert>}
+      </form>
+    </Dialog>
   );
 }
 
-function CreateOrgDialog({
-  open,
-  onClose,
-  onCreated,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+function OrgsInner() {
+  const params = useSearchParams();
+  const router = useRouter();
+  const { data, isLoading } = useApi<Organisation[]>("/organisations");
+  const [open, setOpen] = useState(false);
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setSubmitting(true);
-    try {
-      await api.post("/organisations", { name, slug: slugify(name), description: description || undefined });
-      setName("");
-      setDescription("");
-      onCreated();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to create organisation");
-    } finally {
-      setSubmitting(false);
+  useEffect(() => {
+    if (params.get("new") === "1") {
+      setOpen(true);
+      router.replace("/orgs");
     }
-  }
+  }, [params, router]);
 
   return (
-    <Dialog open={open} onClose={onClose}>
-      <form onSubmit={onSubmit} className="space-y-4 p-5">
-        <h2 className="text-sm font-medium text-ink">New organisation</h2>
-        <div className="space-y-1.5">
-          <Label htmlFor="org-name">Name</Label>
-          <Input id="org-name" required value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="org-desc">Description (optional)</Label>
-          <Input id="org-desc" value={description} onChange={(e) => setDescription(e.target.value)} />
-        </div>
-        {error && <p className="text-sm text-urgent">{error}</p>}
-        <div className="flex justify-end gap-2 pt-1">
-          <Button type="button" variant="secondary" size="sm" onClick={onClose}>
-            Cancel
+    <Page>
+      <PageHeader
+        title="Organisations"
+        description="Workspaces you belong to. You can only join an organisation by invitation."
+        actions={
+          <Button onClick={() => setOpen(true)}>
+            <Plus size={15} /> New organisation
           </Button>
-          <Button type="submit" size="sm" disabled={submitting || !name.trim()}>
-            {submitting ? "Creating…" : "Create"}
-          </Button>
+        }
+      />
+      {isLoading ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-36" />
+          ))}
         </div>
-      </form>
-    </Dialog>
+      ) : !data?.length ? (
+        <Card>
+          <EmptyState
+            icon={Building2}
+            title="You're not in an organisation yet"
+            description="Create one for your team, or ask an admin to invite you by email."
+            action={
+              <Button onClick={() => setOpen(true)}>
+                <Plus size={15} /> Create organisation
+              </Button>
+            }
+          />
+        </Card>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {data.map((o) => (
+            <Link key={o.id} href={`/orgs/${o.id}`} className="group">
+              <Card className="h-full p-4 transition-colors group-hover:border-border-strong">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-md bg-accent-soft text-sm font-bold text-accent-ink">{o.name.charAt(0).toUpperCase()}</span>
+                  <Badge tone={o.myRole === "MEMBER" ? "neutral" : "accent"}>{titleCase(o.myRole)}</Badge>
+                </div>
+                <p className="mt-3 font-semibold text-ink">{o.name}</p>
+                <p className="line-clamp-2 min-h-[36px] text-[13px] text-ink-muted">{o.description || `/${o.slug}`}</p>
+                <div className="mt-3 flex gap-4 border-t border-border pt-3 text-xs text-ink-faint">
+                  <span className="flex items-center gap-1">
+                    <Users size={12} /> {o._count?.members ?? 0}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <LifeBuoy size={12} /> {o._count?.tickets ?? 0}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Kanban size={12} /> {o._count?.boards ?? 0}
+                  </span>
+                </div>
+              </Card>
+            </Link>
+          ))}
+        </div>
+      )}
+      <CreateOrgDialog open={open} onOpenChange={setOpen} />
+    </Page>
+  );
+}
+
+export default function OrgsPage() {
+  return (
+    <Suspense>
+      <OrgsInner />
+    </Suspense>
   );
 }

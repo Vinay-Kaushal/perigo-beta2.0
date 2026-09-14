@@ -2,13 +2,72 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Theme tokens as RGB channels. Light is the default; .dark is applied to <html>
+   by the theme script (explicit choice, or the OS preference when set to system). */
 @layer base {
-  html {
+  :root {
+    color-scheme: light;
+    --canvas: 247 248 250;
+    --surface: 255 255 255;
+    --surface-muted: 243 244 247;
+    --surface-hover: 238 240 244;
+    --border: 228 230 235;
+    --border-strong: 208 212 220;
+    --ink: 17 20 27;
+    --ink-muted: 84 91 105;
+    --ink-faint: 134 141 155;
+    --accent: 79 70 229;
+    --accent-hover: 67 56 202;
+    --accent-soft: 238 240 255;
+    --accent-ink: 67 56 202;
+    --success: 21 128 61;
+    --warning: 180 83 9;
+    --danger: 205 43 49;
+    --info: 37 99 235;
+
+    /* chart roles (validated: dataviz palette, light surface #ffffff) */
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --status-good: #0ca30c;
+    --status-warning: #fab219;
+    --status-serious: #ec835a;
+    --status-critical: #d03b3b;
+    --grid: #eceef2;
+  }
+
+  .dark {
     color-scheme: dark;
+    --canvas: 11 13 18;
+    --surface: 21 24 33;
+    --surface-muted: 27 31 42;
+    --surface-hover: 33 38 51;
+    --border: 38 43 56;
+    --border-strong: 54 61 78;
+    --ink: 233 235 241;
+    --ink-muted: 160 167 182;
+    --ink-faint: 110 117 132;
+    --accent: 129 140 248;
+    --accent-hover: 165 172 250;
+    --accent-soft: 35 36 74;
+    --accent-ink: 165 172 250;
+    --success: 74 222 128;
+    --warning: 251 191 36;
+    --danger: 248 113 113;
+    --info: 96 165 250;
+
+    /* chart roles (validated: dataviz palette, dark surface #151821) */
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --grid: #262b38;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
   }
 
   body {
     @apply bg-canvas text-ink antialiased;
+    font-feature-settings: "cv11", "ss01";
   }
 
   * {
@@ -16,33 +75,36 @@
   }
 
   ::selection {
-    @apply bg-accent-muted text-ink;
+    @apply bg-accent/20;
   }
 
-  /* Visible keyboard focus everywhere, no invisible-on-dark default ring */
   :focus-visible {
-    outline: 2px solid theme("colors.accent");
+    outline: 2px solid rgb(var(--accent));
     outline-offset: 2px;
-    border-radius: 4px;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
   }
 
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
   }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--border-strong));
+    border-radius: 8px;
+    border: 2px solid rgb(var(--canvas));
+  }
   ::-webkit-scrollbar-track {
     background: transparent;
-  }
-  ::-webkit-scrollbar-thumb {
-    @apply bg-border rounded-md;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-border-hover;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;

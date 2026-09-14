@@ -1,103 +1,104 @@
-import type { WebSocket } from "ws";
-import { prisma } from "db/client";
-import type { AuthedUser, ServerMessage } from "./types";
+import type { AuthedUser, PresenceUser, ServerMessage } from "./types";
 
-export interface ClientSocket {
-  ws: WebSocket;
-  user: AuthedUser;
-  /** boardIds this socket has successfully joined. */
-  boards: Set<string>;
+/** The subset of a server-side socket the room registry needs (Bun's ServerWebSocket satisfies it). */
+export interface SocketLike {
+  send(data: string): unknown;
+  readyState: number;
 }
 
-const PRESENCE_COLORS = [
-  "#F87171", "#FB923C", "#FBBF24", "#4ADE80",
-  "#22D3EE", "#818CF8", "#C084FC", "#F472B6",
-];
+const OPEN = 1;
+
+export interface ClientSocket {
+  ws: SocketLike;
+  user: AuthedUser;
+  /** Channels this socket is subscribed to (always includes its own user:<id>). */
+  channels: Set<string>;
+  closed: boolean;
+  /** Token bucket for inbound message rate limiting. */
+  tokens: number;
+  lastRefill: number;
+}
+
+const PRESENCE_COLORS = ["#EF4444", "#F97316", "#EAB308", "#22C55E", "#06B6D4", "#6366F1", "#A855F7", "#EC4899"];
 
 export function colorForUser(userId: string) {
   let hash = 0;
   for (let i = 0; i < userId.length; i++) hash = (hash * 31 + userId.charCodeAt(i)) >>> 0;
-  return PRESENCE_COLORS[hash % PRESENCE_COLORS.length];
+  return PRESENCE_COLORS[hash % PRESENCE_COLORS.length]!;
 }
 
-// boardId -> sockets currently in that room. In-memory, single-process —
-// see README for the note on scaling this to multiple ws instances.
-const rooms = new Map<string, Set<ClientSocket>>();
+/**
+ * In-memory, per-process room registry. Horizontal scaling works because
+ * every instance subscribes to the same Redis channels and fans out to its
+ * own local sockets.
+ */
+export class Rooms {
+  private rooms = new Map<string, Set<ClientSocket>>();
+  private byUser = new Map<string, Set<ClientSocket>>();
 
-export function send(client: ClientSocket, message: ServerMessage) {
-  if (client.ws.readyState === client.ws.OPEN) {
-    client.ws.send(JSON.stringify(message));
+  send(client: ClientSocket, message: ServerMessage) {
+    if (client.ws.readyState === OPEN) client.ws.send(JSON.stringify(message));
   }
-}
 
-export function broadcast(boardId: string, message: ServerMessage, exclude?: ClientSocket) {
-  const room = rooms.get(boardId);
-  if (!room) return;
-  for (const client of room) {
-    if (client !== exclude) send(client, message);
-  }
-}
-
-export async function isBoardMember(userId: string, boardId: string): Promise<boolean> {
-  const board = await prisma.board.findUnique({ where: { id: boardId } });
-  if (!board) return false;
-
-  const orgMembership = await prisma.organisationMember.findUnique({
-    where: { userId_organisationId: { userId, organisationId: board.organisationId } },
-  });
-  if (!orgMembership) return false;
-  if (orgMembership.role !== "MEMBER") return true; // OWNER/ADMIN implicitly have access
-
-  const boardMembership = await prisma.boardMember.findUnique({
-    where: { boardId_organisationMemberId: { boardId, organisationMemberId: orgMembership.id } },
-  });
-  return Boolean(boardMembership);
-}
-
-function rosterFor(boardId: string) {
-  const room = rooms.get(boardId);
-  const seen = new Map<string, { userId: string; name: string; color: string }>();
-  if (room) {
+  broadcast(channel: string, message: ServerMessage, exclude?: ClientSocket) {
+    const room = this.rooms.get(channel);
+    if (!room) return;
+    const frame = JSON.stringify(message);
     for (const client of room) {
-      seen.set(client.user.userId, {
-        userId: client.user.userId,
-        name: client.user.name,
-        color: colorForUser(client.user.userId),
-      });
+      if (client !== exclude && client.ws.readyState === OPEN) client.ws.send(frame);
     }
   }
-  return [...seen.values()];
-}
 
-function syncPresence(boardId: string) {
-  broadcast(boardId, { type: "presence:sync", boardId, users: rosterFor(boardId) });
-}
-
-export async function joinBoard(client: ClientSocket, boardId: string) {
-  const allowed = await isBoardMember(client.user.userId, boardId);
-  if (!allowed) {
-    send(client, { type: "board:join_denied", boardId, reason: "Not a member of this board" });
-    return;
+  register(client: ClientSocket) {
+    if (!this.byUser.has(client.user.userId)) this.byUser.set(client.user.userId, new Set());
+    this.byUser.get(client.user.userId)!.add(client);
+    this.join(client, `user:${client.user.userId}`);
   }
 
-  if (!rooms.has(boardId)) rooms.set(boardId, new Set());
-  rooms.get(boardId)!.add(client);
-  client.boards.add(boardId);
+  socketsForUser(userId: string) {
+    return [...(this.byUser.get(userId) ?? [])];
+  }
 
-  send(client, { type: "board:joined", boardId });
-  syncPresence(boardId);
-}
+  join(client: ClientSocket, channel: string) {
+    if (!this.rooms.has(channel)) this.rooms.set(channel, new Set());
+    this.rooms.get(channel)!.add(client);
+    client.channels.add(channel);
+    if (channel.startsWith("board:")) this.syncPresence(channel);
+  }
 
-export function leaveBoard(client: ClientSocket, boardId: string) {
-  rooms.get(boardId)?.delete(client);
-  client.boards.delete(boardId);
-  broadcast(boardId, { type: "presence:left", boardId, userId: client.user.userId });
-  syncPresence(boardId);
-}
+  leave(client: ClientSocket, channel: string) {
+    const room = this.rooms.get(channel);
+    if (!room?.delete(client)) return;
+    client.channels.delete(channel);
+    if (room.size === 0) this.rooms.delete(channel);
+    if (channel.startsWith("board:")) {
+      this.broadcast(channel, { type: "presence:left", channel, userId: client.user.userId });
+      this.syncPresence(channel);
+    }
+  }
 
-/** Called on socket close — leaves every room the socket was still in. */
-export function leaveAllBoards(client: ClientSocket) {
-  for (const boardId of [...client.boards]) {
-    leaveBoard(client, boardId);
+  unregister(client: ClientSocket) {
+    for (const channel of [...client.channels]) this.leave(client, channel);
+    const set = this.byUser.get(client.user.userId);
+    set?.delete(client);
+    if (set?.size === 0) this.byUser.delete(client.user.userId);
+  }
+
+  roster(channel: string): PresenceUser[] {
+    const seen = new Map<string, PresenceUser>();
+    for (const client of this.rooms.get(channel) ?? []) {
+      seen.set(client.user.userId, { userId: client.user.userId, name: client.user.name, color: colorForUser(client.user.userId) });
+    }
+    return [...seen.values()];
+  }
+
+  private syncPresence(channel: string) {
+    this.broadcast(channel, { type: "presence:sync", channel, users: this.roster(channel) });
+  }
+
+  get size() {
+    let n = 0;
+    for (const set of this.byUser.values()) n += set.size;
+    return n;
   }
 }

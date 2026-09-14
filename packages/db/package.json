@@ -5,9 +5,12 @@
   "private": true,
   "scripts": {
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "postinstall": "prisma generate",
+    "generate": "prisma generate",
+    "migrate:deploy": "prisma migrate deploy"
   },
-  "exports" : {
+  "exports": {
     "./client": "./index.ts"
   },
   "devDependencies": {

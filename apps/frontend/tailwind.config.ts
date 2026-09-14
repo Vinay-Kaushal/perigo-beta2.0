@@ -1,44 +1,59 @@
 import type { Config } from "tailwindcss";
 
-// Design tokens for perigo — a dense, dark work surface (closer to a
-// terminal/ops dashboard than a marketing-site SaaS kit). Named to the
-// role they play, not the literal color, so the palette can shift without
-// touching component code.
+// Colors are CSS variables holding RGB channels (see globals.css), so every
+// token supports opacity modifiers (bg-accent/10) and swaps with the theme.
+const token = (name: string) => `rgb(var(--${name}) / <alpha-value>)`;
+
 export default {
   darkMode: "class",
-  content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}"],
+  content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./lib/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
-        canvas: "#0C0F14", // page background
-        surface: "#141821", // cards, columns
-        "surface-raised": "#1B202B", // popovers, dialogs
-        border: "#242A35",
-        "border-hover": "#323B4A",
-        ink: "#E7E9EE", // primary text
-        "ink-muted": "#8B93A3", // secondary text
-        "ink-faint": "#565E6D", // placeholders, disabled
-        accent: "#7C6CF6", // primary interactive (violet)
-        "accent-hover": "#8F81F8",
-        "accent-muted": "#312A57",
-        urgent: "#F2545B",
-        high: "#F5A623",
-        medium: "#4FB0FF",
-        low: "#6B7280",
-        success: "#3DD68C",
+        canvas: token("canvas"),
+        surface: token("surface"),
+        "surface-muted": token("surface-muted"),
+        "surface-hover": token("surface-hover"),
+        border: token("border"),
+        "border-strong": token("border-strong"),
+        ink: token("ink"),
+        "ink-muted": token("ink-muted"),
+        "ink-faint": token("ink-faint"),
+        accent: token("accent"),
+        "accent-hover": token("accent-hover"),
+        "accent-soft": token("accent-soft"),
+        "accent-ink": token("accent-ink"),
+        success: token("success"),
+        warning: token("warning"),
+        danger: token("danger"),
+        info: token("info"),
       },
       fontFamily: {
-        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
+        sans: ["var(--font-sans)", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
         mono: ["var(--font-mono)", "ui-monospace", "monospace"],
+      },
+      fontSize: {
+        "2xs": ["11px", "16px"],
       },
       borderRadius: {
         sm: "4px",
         DEFAULT: "6px",
         md: "8px",
         lg: "10px",
+        xl: "14px",
       },
       boxShadow: {
-        panel: "0 8px 24px -8px rgba(0,0,0,0.5)",
+        card: "0 1px 2px rgb(16 24 40 / 0.04)",
+        pop: "0 12px 32px -8px rgb(16 24 40 / 0.18), 0 2px 6px rgb(16 24 40 / 0.06)",
+      },
+      keyframes: {
+        "fade-in": { from: { opacity: "0" }, to: { opacity: "1" } },
+        "scale-in": { from: { opacity: "0", transform: "scale(0.97) translateY(4px)" }, to: { opacity: "1", transform: "none" } },
+        pulse: { "50%": { opacity: ".5" } },
+      },
+      animation: {
+        "fade-in": "fade-in 120ms ease-out",
+        "scale-in": "scale-in 140ms ease-out",
       },
     },
   },

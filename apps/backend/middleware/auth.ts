@@ -1,34 +1,62 @@
-import type { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
+import type { NextFunction, Request, Response } from "express";
+import { prisma } from "../lib/prisma";
+import { verifyAccessToken } from "../lib/tokens";
+import { HttpError } from "../lib/http";
+import { CSRF_HEADER, SESSION_COOKIE, readCookie } from "../lib/session";
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /**
- * Assumes you already have some auth issuing service (NextAuth on the
- * frontend, a dedicated auth service, whatever) that hands out a JWT
- * containing at least `sub` (userId). This backend just verifies it.
+ * Accepts either a bearer token (API clients) or the httpOnly session cookie
+ * (browsers). Cookie-authenticated writes must carry the X-CSRF-Protection
+ * header: a cross-site form can't set custom headers, and a cross-origin
+ * fetch that tries is stopped by the CORS preflight allowlist.
  *
- * JWT_SECRET must be the SAME secret the websocket service uses to verify
- * sockets, so both services trust the same tokens.
+ * The token's version must match the user's current tokenVersion, so a
+ * password change or "sign out everywhere" revokes every session at once.
  */
-export interface AuthedRequest extends Request {
-  user: { id: string; email: string };
-}
-
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
-  const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
+  const bearer = header?.startsWith("Bearer ") ? header.slice(7).trim() : undefined;
+  const cookie = bearer ? undefined : readCookie(req, SESSION_COOKIE);
+  const token = bearer ?? cookie;
+  if (!token) return res.status(401).json({ error: "Not signed in", code: "UNAUTHENTICATED" });
 
-  if (!token) {
-    return res.status(401).json({ error: "Missing bearer token" });
+  if (cookie && !SAFE_METHODS.has(req.method) && req.headers[CSRF_HEADER] !== "1") {
+    return res.status(403).json({ error: "Missing CSRF protection header", code: "CSRF" });
+  }
+
+  let claims;
+  try {
+    claims = verifyAccessToken(token);
+  } catch {
+    return res.status(401).json({ error: "Invalid or expired session", code: "UNAUTHENTICATED" });
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
-      sub: string;
-      email: string;
-    };
-    (req as AuthedRequest).user = { id: decoded.sub, email: decoded.email };
+    const user = await prisma.user.findUnique({
+      where: { id: claims.sub },
+      select: { id: true, email: true, name: true, tokenVersion: true, emailVerifiedAt: true },
+    });
+    if (!user || user.tokenVersion !== claims.tv) {
+      return res.status(401).json({ error: "Session is no longer valid", code: "UNAUTHENTICATED" });
+    }
+    req.user = { id: user.id, email: user.email, name: user.name, emailVerified: !!user.emailVerifiedAt };
     next();
-  } catch {
-    return res.status(401).json({ error: "Invalid or expired token" });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** For handlers mounted behind requireAuth. */
+export function currentUser(req: Request) {
+  if (!req.user) throw new HttpError(401, "Not authenticated", "UNAUTHENTICATED");
+  return req.user;
+}
+
+/** Outward-facing actions (creating orgs, inviting people) need a verified email address. */
+export function requireVerifiedEmail(req: Request) {
+  if (!currentUser(req).emailVerified) {
+    throw new HttpError(403, "Verify your email address first — check your inbox for the link", "EMAIL_NOT_VERIFIED");
   }
 }

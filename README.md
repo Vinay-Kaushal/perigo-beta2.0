@@ -1,159 +1,92 @@
-# Turborepo starter
+# perigo
 
-This Turborepo starter is maintained by the Turborepo core team.
+Work management for organisations: a realtime **service desk** (tickets, assignment, SLAs), **projects** (kanban boards), **expense approvals**, **goal tracking**, and **dashboards**, with invite-and-approve onboarding and an audit trail.
 
-## Using this example
+## Architecture
 
-Run the following command:
-
-```sh
-npx create-turbo@latest
+```
+apps/frontend   Next.js 15 (App Router) · Tailwind · Radix · SWR          :3000
+apps/backend    Express REST API · Zod validation · Prisma                  :4000
+apps/websocket  Bun native WebSockets · fans out Redis pub/sub events       :4001
+packages/db     Prisma schema, migrations, generated client (PostgreSQL)
 ```
 
-## What's inside?
+- The **API** writes to Postgres, then publishes a small event to Redis on `org:<id>`, `board:<id>` or `user:<id>`.
+- The **websocket service** subscribes to those channels and forwards each event to the sockets allowed to see it. Any number of instances can run side by side.
+- The **frontend** keeps one socket per session. An org event revalidates that org's cached queries, so lists, stats and detail pages update for everyone without a reload. Personal notifications show up as toasts and an unread badge.
 
-This Turborepo includes the following packages/apps:
+## Modules
 
-### Apps and Packages
+| Module | What it does |
+|---|---|
+| Service desk | Per-org numbered tickets (`ACME-42`); types: incident, request, problem, change, question. SLA due dates come from priority (urgent 4h → low 5d), with breach tracking. Tickets move through a status workflow (new → open → in progress / on hold → resolved → closed, or cancelled) and can be assigned to a person and a team queue. They also have watchers, comments, and a full activity timeline. |
+| Assignment rules | Anyone can pick up or route an unassigned ticket. Once assigned, only the requester, the assignee, or an admin can reassign it. The new assignee, the previous assignee, the requester and watchers each get a specific notification ("Marcus assigned ACME-42 to you", "…reassigned to Sam"). |
+| Onboarding | You can only join by invitation. Invite → the invitee accepts via the emailed link (it must match their account's email) → an owner or admin approves. The approval step can be turned off per org, but invites sent by regular members always need approval. |
+| Expenses | Members submit expenses; owners and admins approve or reject them (a reason is required to reject). Admins can't approve their own expenses. Includes monthly and category breakdowns. |
+| Goals | Three kinds: *Metric* (manual check-ins), *Tickets resolved* (counted automatically) and *Budget* (approved spend, counted automatically). Health (on track / at risk / off track) compares progress with where you'd be on a straight line through the period. |
+| Projects | Kanban boards with drag-and-drop, live presence and cursors, task assignment and comments. |
+| Projects admin | Owners/admins add, rename, retype, reorder and delete board columns; changes sync live. |
+| Accounts | Email verification (required before creating organisations or inviting), forgot/reset password, sign out everywhere. |
+| Admin | Roles (owner/admin/member), teams, org settings, audit log, 30-day PDF report. |
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
+## Getting started
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
+Requirements: Bun ≥ 1.3, Node ≥ 20, PostgreSQL 16, Redis 7.
 
-### Utilities
+```bash
+bun install                       # also generates the Prisma client
+cp apps/backend/.env.example apps/backend/.env         # fill in DATABASE_URL, JWT_SECRET (openssl rand -hex 32)…
+cp apps/websocket/.env.example apps/websocket/.env
+cp apps/frontend/.env.example apps/frontend/.env
+cp packages/db/.env.example packages/db/.env
 
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
+cd packages/db && bunx prisma migrate deploy && cd ../..
+cd apps/backend && bun run seed && cd ../..           # optional demo data
+bun run dev                                           # all three apps via turbo
 ```
 
-Without global `turbo`, use your package manager:
+Demo logins after seeding (password `Password123`): `owner@acme.test`, `admin@acme.test`, `alex@acme.test`, `sam@acme.test`. `jordan@acme.test` has a pending join request for an admin to approve.
 
-```sh
-cd my-turborepo
-npx turbo build
-bun dlx turbo build
-bun exec turbo build
+## Tests
+
+The suites run against throwaway services and **truncate every table**. They refuse any database whose name doesn't contain `test`.
+
+```bash
+docker run -d --name xsam-test-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=perigo_test -p 5434:5432 postgres:16-alpine
+docker run -d --name xsam-test-redis -p 6381:6379 redis:7-alpine
+cd apps/backend && bun run test:db:prepare    # apply migrations to the test DB
+
+bun run test          # from the repo root: backend (142) + websocket (9) + frontend unit (15)
 ```
 
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+Override the database and Redis with `TEST_DATABASE_URL` and `TEST_REDIS_URL`.
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+**End-to-end (Playwright)** runs against a live stack with the seeded demo data. The e2e suite signs in repeatedly, so start the API with a higher login limit:
 
-```sh
-turbo build --filter=docs
+```bash
+cd apps/backend && bun run seed && RATE_LIMIT_AUTH_MAX=1000 bun run dev    # plus websocket + frontend
+cd apps/frontend && bunx playwright install chromium
+E2E_BASE_URL=http://localhost:3000 bun run test:e2e
 ```
 
-Without global `turbo`:
+The e2e suite covers: login redirects and open-redirect protection, httpOnly session, sign-out, forgot password; two browsers checking that ticket assignment, status changes and comments arrive live; invite → register → accept → admin approval → access; board column management and presence. Every e2e test also fails on page errors, console errors or unexpected 4xx/5xx responses.
 
-```sh
-npx turbo build --filter=docs
-bun exec turbo build --filter=docs
-bun exec turbo build --filter=docs
-```
+- **Frontend unit.** The API client (cookie + CSRF header, 401 handling, open-redirect guard) and formatting helpers.
+- **Backend.** Unit tests cover the ticket workflow and permissions, SLA calculation, goal health and integer positioning. Integration tests cover auth, sessions and hardening; organisations, roles and IDOR protection; the full invitation flow; tickets (including concurrency, notifications and realtime publishes); boards and tasks; expenses and goals; dashboards and analytics. Every API response in every test is also checked for leaked `passwordHash`, `tokenVersion` or `tokenHash`.
+- **Websocket.** Ticket auth, origin checks, channel authorisation, fan-out isolation, live access revocation, presence, and flood/oversize handling.
 
-### Develop
+## Security model
 
-To develop all apps and packages, run the following command:
+- **Sessions.** Browsers hold the session in an httpOnly, SameSite=Lax cookie that JavaScript can't read. Cookie-authenticated writes require an `X-CSRF-Protection` header, which cross-site forms can't send and the CORS allowlist blocks for other origins. API clients can use a bearer token instead.
+- **Account recovery.** Email verification and password-reset links are single-use, expiring, and stored only as SHA-256 hashes; a new link invalidates older ones. "Forgot password" gives the same response whether or not the account exists, and a reset signs out every session.
+- **Authentication.** HS256 JWTs pinned to issuer and audience. Each token carries a `tokenVersion`, so changing the password or using "sign out everywhere" revokes every existing token immediately. bcrypt hashes; login takes the same time whether or not the email exists; generic credential errors; password policy. Google sign-in only links to an existing account when Google has verified the email.
+- **Authorisation.** Every org-scoped query is filtered by the org id from the URL, never by an id supplied in the body. A resource from another org returns 404, not 403, so ids can't be probed. Role checks cover: last-owner protection, admins can't remove other admins, board visibility, the approval column gate, and separation of duties on expense approval.
+- **Invitations.** Tokens are 256-bit and random, and only their SHA-256 is stored. Accepting requires both the token and a matching account email. Links expire, are single-use, and are replaced when an invite is resent.
+- **Websockets.** A short-lived, single-use ticket from `POST /auth/ws-ticket` is used instead of putting the JWT in the URL. The server checks an origin allowlist, re-checks channel access on subscribe, drops subscriptions the moment access is revoked, and enforces per-socket rate limits, a payload cap and connection caps.
+- **HTTP.** Helmet with a strict CSP, a CORS allowlist, `Cache-Control: no-store`, Redis-backed rate limits (global, login, signup, invite lookup), request ids, a 256KB body cap, env validation at boot, no stack traces in responses, and graceful shutdown.
+- **Frontend.** CSP and security headers, no tokens in JavaScript, open-redirect-safe `?next=`, HTML-escaped email templates, http(s)-only avatar URLs.
+- **Audit log.** Role changes, membership, invitations and approvals, expense decisions and deletions, each with actor and IP.
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
+## Database migrations
 
-```sh
-cd my-turborepo
-turbo dev
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo dev
-bun exec turbo dev
-bun exec turbo dev
-```
-
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo dev --filter=web
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo dev --filter=web
-bun exec turbo dev --filter=web
-bun exec turbo dev --filter=web
-```
-
-### Remote Caching
-
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
-
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo login
-bun exec turbo login
-bun exec turbo login
-```
-
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
-
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo link
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo link
-bun exec turbo link
-bun exec turbo link
-```
-
-## Useful Links
-
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+`20260914090000_auth_tokens` marks existing users as verified so nobody is locked out. `20260913100000_service_desk_mvp` preserves existing data: goal targets are renamed rather than dropped, existing invitation tokens are hashed so old links keep working, and pre-existing expenses are marked approved. Always run `prisma migrate deploy` before starting a new build.

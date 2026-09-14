@@ -1,119 +1,157 @@
-import type { Response } from "express";
+import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
-import type { AuthedRequest } from "../middleware/auth";
+import { publicUser } from "../lib/selects";
+import { currentUser } from "../middleware/auth";
+import { isOrgAdmin } from "../middleware/access";
+import { OPEN_STATUSES, isSlaBreached, ticketKey } from "../domain/tickets";
+import { goalWithProgress } from "./goal.controller";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+const DAY = 24 * 60 * 60 * 1000;
+const PRIORITY_RANK = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 } as const;
 
-export async function myDashboard(req: AuthedRequest, res: Response) {
-  const userId = req.user.id;
+/** The signed-in user's cross-organisation home screen. */
+export async function myDashboard(req: Request, res: Response) {
+  const user = currentUser(req);
+  const now = new Date();
+  const in24h = new Date(now.getTime() + DAY);
+  const weekAhead = new Date(now.getTime() + 7 * DAY);
+  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
   const memberships = await prisma.organisationMember.findMany({
-    where: { userId },
-    include: { organisation: { include: { _count: { select: { boards: true, members: true } } } } },
+    where: { userId: user.id },
+    include: { organisation: { include: { _count: { select: { members: true } } } } },
+    orderBy: { joinedAt: "asc" },
   });
   const orgIds = memberships.map((m) => m.organisationId);
-  const financialOrgIds = memberships
-    .filter((m) => m.role === "OWNER" || m.role === "ADMIN")
-    .map((m) => m.organisationId);
-  const orgNameById = new Map(memberships.map((m) => [m.organisationId, m.organisation.name]));
+  const adminOrgIds = memberships.filter((m) => isOrgAdmin(m.role)).map((m) => m.organisationId);
+  const orgById = new Map(memberships.map((m) => [m.organisationId, m.organisation]));
+  const openTicket = { organisationId: { in: orgIds }, status: { in: OPEN_STATUSES } };
+  // Members only see tasks on boards they belong to.
+  const taskScope = {
+    board: {
+      OR: [
+        { organisationId: { in: adminOrgIds } },
+        { members: { some: { organisationMember: { userId: user.id } } } },
+      ],
+    },
+  };
 
-  if (orgIds.length === 0) {
-    return res.json({
-      orgs: [],
-      myTasks: { total: 0, overdueCount: 0, dueThisWeekCount: 0 },
-      upcomingTasks: [],
-      expensesThisMonth: 0,
-      recentActivity: [],
-    });
-  }
-
-  const now = new Date();
-  const weekAhead = new Date(now.getTime() + 7 * DAY_MS);
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-  const [myTasksRaw, expenseSum, recentActivity] = await Promise.all([
+  const [
+    assignedTickets,
+    requestedOpen,
+    openByOrg,
+    myTasks,
+    joinRequests,
+    pendingExpenses,
+    myExpenseSum,
+    unreadNotifications,
+    goals,
+    myJoinRequests,
+  ] = await Promise.all([
+    prisma.ticket.findMany({
+      where: { ...openTicket, assigneeId: user.id },
+      include: { requester: publicUser },
+      take: 200,
+    }),
+    prisma.ticket.count({ where: { ...openTicket, requesterId: user.id } }),
+    prisma.ticket.groupBy({ by: ["organisationId"], where: openTicket, _count: { _all: true } }),
     prisma.task.findMany({
-      where: { assignees: { some: { userId } }, board: { organisationId: { in: orgIds } } },
-      select: {
-        id: true,
-        title: true,
-        dueDate: true,
-        priority: true,
-        completedAt: true,
-        board: { select: { id: true, name: true, organisationId: true } },
-      },
+      where: { assignees: { some: { userId: user.id } }, completedAt: null, ...taskScope },
+      select: { id: true, title: true, dueDate: true, priority: true, board: { select: { id: true, name: true, organisationId: true } } },
+      take: 500,
+    }),
+    prisma.invitation.groupBy({
+      by: ["organisationId"],
+      where: { organisationId: { in: adminOrgIds }, status: "AWAITING_APPROVAL" },
+      _count: { _all: true },
+    }),
+    prisma.expense.groupBy({
+      by: ["organisationId"],
+      where: { organisationId: { in: adminOrgIds }, status: "PENDING", createdById: { not: user.id } },
+      _count: { _all: true },
     }),
     prisma.expense.aggregate({
-      // Only orgs where this person is OWNER/ADMIN contribute to the total —
-      // a plain MEMBER shouldn't see another org's spend just because
-      // they're also a member elsewhere. Members with no financial orgs
-      // simply see $0 here, which is correct, not a bug.
-      where: { organisationId: { in: financialOrgIds }, date: { gte: startOfMonth, lte: now } },
+      where: { createdById: user.id, status: "APPROVED", date: { gte: startOfMonth } },
       _sum: { amount: true },
     }),
-    prisma.taskActivity.findMany({
-      where: {
-        task: { board: { organisationId: { in: orgIds } } },
-        OR: [{ userId }, { task: { assignees: { some: { userId } } } }],
-      },
-      include: {
-        user: true,
-        task: { select: { id: true, title: true, board: { select: { id: true, name: true, organisationId: true } } } },
-      },
-      orderBy: { createdAt: "desc" },
-      take: 20,
+    prisma.notification.count({ where: { userId: user.id, readAt: null } }),
+    prisma.goal.findMany({
+      where: { organisationId: { in: orgIds }, ownerId: user.id, periodEnd: { gte: now } },
+      orderBy: { periodEnd: "asc" },
+      take: 6,
+    }),
+    prisma.invitation.findMany({
+      where: { acceptedById: user.id, status: "AWAITING_APPROVAL" },
+      include: { organisation: { select: { id: true, name: true } } },
     }),
   ]);
 
-  const openTasks = myTasksRaw.filter((t) => !t.completedAt);
-  const overdueTasks = openTasks.filter((t) => t.dueDate && t.dueDate < now);
-  const dueThisWeek = openTasks.filter((t) => t.dueDate && t.dueDate >= now && t.dueDate <= weekAhead);
+  const count = <T extends { organisationId: string; _count: { _all: number } }>(rows: T[]) =>
+    new Map(rows.map((r) => [r.organisationId, r._count._all]));
+  const openByOrgMap = count(openByOrg);
+  const joinMap = count(joinRequests);
+  const expenseMap = count(pendingExpenses);
 
-  const overdueByOrg = new Map<string, number>();
-  for (const t of overdueTasks) {
-    const orgId = t.board.organisationId;
-    overdueByOrg.set(orgId, (overdueByOrg.get(orgId) ?? 0) + 1);
-  }
+  const sortedTickets = [...assignedTickets].sort(
+    (a, b) =>
+      PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
+      (a.dueAt?.getTime() ?? Infinity) - (b.dueAt?.getTime() ?? Infinity)
+  );
 
-  const orgs = memberships.map((m) => ({
-    id: m.organisationId,
-    name: m.organisation.name,
-    slug: m.organisation.slug,
-    myRole: m.role,
-    boardsCount: m.organisation._count.boards,
-    membersCount: m.organisation._count.members,
-    overdueCount: overdueByOrg.get(m.organisationId) ?? 0,
-  }));
-
-  const upcomingTasks = dueThisWeek
-    .sort((a, b) => (a.dueDate!.getTime() ?? 0) - (b.dueDate!.getTime() ?? 0))
-    .slice(0, 10)
-    .map((t) => ({
-      id: t.id,
-      title: t.title,
-      dueDate: t.dueDate,
-      priority: t.priority,
-      orgName: orgNameById.get(t.board.organisationId) ?? "",
-      boardName: t.board.name,
-      boardId: t.board.id,
-    }));
+  const overdueTasks = myTasks.filter((t) => t.dueDate && t.dueDate < now);
+  const dueThisWeek = myTasks.filter((t) => t.dueDate && t.dueDate >= now && t.dueDate <= weekAhead);
 
   res.json({
-    orgs,
-    myTasks: { total: openTasks.length, overdueCount: overdueTasks.length, dueThisWeekCount: dueThisWeek.length },
-    upcomingTasks,
-    expensesThisMonth: Number(expenseSum._sum.amount ?? 0),
-    recentActivity: recentActivity.map((a) => ({
-      id: a.id,
-      type: a.type,
-      createdAt: a.createdAt,
-      user: a.user,
-      task: {
-        id: a.task.id,
-        title: a.task.title,
-        board: { id: a.task.board.id, name: a.task.board.name },
-        orgName: orgNameById.get(a.task.board.organisationId) ?? "",
-      },
+    orgs: memberships.map((m) => ({
+      id: m.organisationId,
+      name: m.organisation.name,
+      slug: m.organisation.slug,
+      myRole: m.role,
+      membersCount: m.organisation._count.members,
+      openTickets: openByOrgMap.get(m.organisationId) ?? 0,
+      pendingApprovals: isOrgAdmin(m.role) ? (joinMap.get(m.organisationId) ?? 0) + (expenseMap.get(m.organisationId) ?? 0) : 0,
     })),
+    tickets: {
+      assignedOpen: assignedTickets.length,
+      breached: assignedTickets.filter((t) => isSlaBreached(t, now)).length,
+      dueSoon: assignedTickets.filter((t) => t.dueAt && t.dueAt >= now && t.dueAt <= in24h).length,
+      requestedOpen,
+    },
+    myTickets: sortedTickets.slice(0, 8).map((t) => {
+      const org = orgById.get(t.organisationId)!;
+      return {
+        id: t.id,
+        number: t.number,
+        key: ticketKey(org.ticketPrefix, t.number),
+        title: t.title,
+        status: t.status,
+        priority: t.priority,
+        dueAt: t.dueAt,
+        slaBreached: isSlaBreached(t, now),
+        requester: t.requester,
+        organisation: { id: org.id, name: org.name },
+      };
+    }),
+    tasks: { open: myTasks.length, overdue: overdueTasks.length, dueThisWeek: dueThisWeek.length },
+    upcomingTasks: [...overdueTasks, ...dueThisWeek]
+      .sort((a, b) => a.dueDate!.getTime() - b.dueDate!.getTime())
+      .slice(0, 8)
+      .map((t) => ({
+        id: t.id,
+        title: t.title,
+        dueDate: t.dueDate,
+        priority: t.priority,
+        overdue: t.dueDate! < now,
+        board: { id: t.board.id, name: t.board.name },
+        organisation: { id: t.board.organisationId, name: orgById.get(t.board.organisationId)?.name ?? "" },
+      })),
+    approvals: {
+      joinRequests: joinRequests.reduce((n, r) => n + r._count._all, 0),
+      expenses: pendingExpenses.reduce((n, r) => n + r._count._all, 0),
+    },
+    myExpensesThisMonth: Number(myExpenseSum._sum.amount ?? 0),
+    unreadNotifications,
+    goals: await Promise.all(goals.map(async (g) => ({ ...(await goalWithProgress(g)), organisation: { id: g.organisationId, name: orgById.get(g.organisationId)?.name ?? "" } }))),
+    pendingJoinRequests: myJoinRequests.map((r) => ({ id: r.id, organisation: r.organisation, acceptedAt: r.acceptedAt })),
   });
 }

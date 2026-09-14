@@ -5,20 +5,24 @@
   "private": true,
   "scripts": {
     "dev": "bun --watch index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "bun dist/index.js"
+    "start": "bun index.ts",
+    "check-types": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "test:unit": "bun test tests/unit",
+    "test:db:prepare": "cd ../../packages/db && DATABASE_URL=${TEST_DATABASE_URL:-postgresql://postgres:postgres@localhost:5434/perigo_test} bunx prisma migrate deploy",
+    "seed": "bun scripts/seed.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "google-auth-library": "^9.14.1",
-    "pdfkit": "^0.15.1",
     "cors": "^2.8.5",
     "db": "workspace:*",
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
+    "google-auth-library": "^9.14.1",
     "helmet": "^7.1.0",
     "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",
+    "pdfkit": "^0.15.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {

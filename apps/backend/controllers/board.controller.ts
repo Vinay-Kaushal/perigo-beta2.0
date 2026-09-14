@@ -1,185 +1,235 @@
-import type { Response } from "express";
+import type { Request, Response } from "express";
 import { z } from "zod";
+import type { TaskStatusType } from "db/client";
 import { prisma } from "../lib/prisma";
-import  type { AuthedRequest } from "../middleware/auth";
-import { publishBoardEvent } from "../lib/eventBus";
-import { nextPosition, betweenPosition } from "../utils/position";
+import { publicUser } from "../lib/selects";
+import { badRequest, conflict, forbidden, notFound, param } from "../lib/http";
+import { publishBoardEvent, publishUserEvent } from "../lib/eventBus";
+import { currentUser } from "../middleware/auth";
+import { getMembership, isOrgAdmin } from "../middleware/access";
+import { audit } from "../services/audit";
+import { POSITION_GAP, betweenPosition, nextPosition } from "../utils/position";
 
-const DEFAULT_STATUSES: Array<{ name: string; type: string }> = [
+const DEFAULT_STATUSES: Array<{ name: string; type: TaskStatusType }> = [
   { name: "To Do", type: "TODO" },
   { name: "In Progress", type: "IN_PROGRESS" },
   { name: "In Review", type: "IN_REVIEW" },
   { name: "Done", type: "COMPLETED" },
 ];
 
+const STATUS_TYPES = ["TODO", "IN_PROGRESS", "IN_REVIEW", "BLOCKED", "COMPLETED", "APPROVED", "REJECTED"] as const;
+
+function board(req: Request) {
+  if (!req.board) throw notFound("Board not found");
+  return req.board;
+}
+
+function requireBoardAdmin(req: Request) {
+  if (!isOrgAdmin(getMembership(req).role)) throw forbidden("Only owners and admins can manage boards");
+}
+
 const boardSchema = z.object({
-  name: z.string().min(1).max(120),
-  description: z.string().max(500).optional(),
-  teamId: z.string().uuid().optional(),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).nullable().optional(),
+  teamId: z.string().uuid().nullable().optional(),
 });
 
-export async function createBoard(req: AuthedRequest, res: Response) {
+async function assertTeamInOrg(orgId: string, teamId: string | null | undefined) {
+  if (!teamId) return;
+  const team = await prisma.team.findFirst({ where: { id: teamId, organisationId: orgId } });
+  if (!team) throw badRequest("Team must belong to this organisation");
+}
+
+export async function createBoard(req: Request, res: Response) {
+  const membership = getMembership(req);
   const body = boardSchema.parse(req.body);
-  const orgMembership = (req as any).membership;
-  const orgId = req.params.orgId;
+  await assertTeamInOrg(membership.organisationId, body.teamId);
 
-  if (!orgId) {
-    return res.status(400).json({ error: "Organisation ID is required" });
-  }
-
-  const board = await prisma.board.create({
+  const created = await prisma.board.create({
     data: {
       name: body.name,
       description: body.description,
       teamId: body.teamId,
-      organisationId: orgId,
-      members: { create: { organisationMemberId: orgMembership.id } },
-      // Every board ships with a default swimlane set (Trello/Jira-style)
-      // so the frontend never has to render an empty board with no columns.
+      organisationId: membership.organisationId,
+      members: { create: { organisationMemberId: membership.id } },
       taskStatuses: {
-        create: DEFAULT_STATUSES.map((s, i) => ({
-          name: s.name,
-          type: s.type as any,
-          position: (i + 1) * 1000,
-        })),
+        create: DEFAULT_STATUSES.map((s, i) => ({ name: s.name, type: s.type, position: (i + 1) * POSITION_GAP })),
       },
     },
     include: { taskStatuses: { orderBy: { position: "asc" } } },
   });
-
-  res.status(201).json(board);
+  res.status(201).json(created);
 }
 
-export async function listBoards(req: AuthedRequest, res: Response) {
+/** Admins see every board; members only the boards they've been added to. */
+export async function listBoards(req: Request, res: Response) {
+  const membership = getMembership(req);
   const boards = await prisma.board.findMany({
-    where: { organisationId: req.params.orgId },
-    include: { _count: { select: { tasks: true, members: true } } },
+    where: {
+      organisationId: membership.organisationId,
+      ...(isOrgAdmin(membership.role) ? {} : { members: { some: { organisationMemberId: membership.id } } }),
+    },
+    include: {
+      team: { select: { id: true, name: true } },
+      _count: { select: { tasks: true, members: true } },
+    },
+    orderBy: { updatedAt: "desc" },
   });
   res.json(boards);
 }
 
-export async function getBoard(req: AuthedRequest, res: Response) {
-  const board = await prisma.board.findUnique({
-    where: { id: req.params.boardId },
+export async function getBoard(req: Request, res: Response) {
+  const b = board(req);
+  const full = await prisma.board.findUniqueOrThrow({
+    where: { id: b.id },
     include: {
       taskStatuses: { orderBy: { position: "asc" } },
-      members: { include: { organisationMember: { include: { user: true } } } },
+      team: { select: { id: true, name: true } },
+      members: { include: { organisationMember: { include: { user: publicUser } } } },
     },
   });
-  if (!board) return res.status(404).json({ error: "Board not found" });
-  res.json(board);
-}
-
-export async function updateBoard(req: AuthedRequest, res: Response) {
-  const body = boardSchema.partial().parse(req.body);
-  const board = await prisma.board.update({ where: { id: req.params.boardId }, data: body });
-
-  await publishBoardEvent(board.id, "BOARD_UPDATED", req.user.id, board);
-  res.json(board);
-}
-
-export async function deleteBoard(req: AuthedRequest, res: Response) {
-  await prisma.board.delete({ where: { id: req.params.boardId } });
-  res.status(204).send();
-}
-
-const addBoardMemberSchema = z.object({ organisationMemberId: z.string().uuid() });
-
-export async function addBoardMember(req: AuthedRequest, res: Response) {
-  const body = addBoardMemberSchema.parse(req.body);
-  const boardId = req.params.boardId;
-
-  if (!boardId) {
-    return res.status(400).json({ error: "Board ID is required" });
-  }
-
-  const member = await prisma.boardMember.create({
-    data: { boardId, organisationMemberId: body.organisationMemberId },
-    include: { organisationMember: { include: { user: true } } },
+  res.json({
+    ...full,
+    myRole: getMembership(req).role,
+    members: full.members.map((m) => ({ id: m.id, userId: m.organisationMember.userId, role: m.organisationMember.role, user: m.organisationMember.user })),
   });
-
-  await publishBoardEvent(boardId as string, "MEMBER_ADDED", req.user.id, member);
-  res.status(201).json(member);
 }
 
-export async function removeBoardMember(req: AuthedRequest, res: Response) {
-  const member = await prisma.boardMember.delete({ where: { id: req.params.memberId } });
-  await publishBoardEvent(req.params.boardId as string, "MEMBER_REMOVED", req.user.id, { id: member.id });
+export async function updateBoard(req: Request, res: Response) {
+  requireBoardAdmin(req);
+  const b = board(req);
+  const body = boardSchema.partial().parse(req.body);
+  await assertTeamInOrg(b.organisationId, body.teamId);
+  const updated = await prisma.board.update({ where: { id: b.id }, data: body });
+  await publishBoardEvent(b.id, "BOARD_UPDATED", req.user!.id, { id: b.id });
+  res.json(updated);
+}
+
+export async function deleteBoard(req: Request, res: Response) {
+  requireBoardAdmin(req);
+  const b = board(req);
+  await prisma.board.delete({ where: { id: b.id } });
+  await audit(req, { organisationId: b.organisationId, action: "board.deleted", targetType: "board", targetId: b.id, metadata: { name: b.name } });
+  await publishBoardEvent(b.id, "BOARD_DELETED", req.user!.id, { id: b.id });
   res.status(204).send();
 }
 
-// ---- Task statuses (columns) ----
+// ---- board members
+
+const addBoardMemberSchema = z.object({ userId: z.string().uuid() });
+
+export async function addBoardMember(req: Request, res: Response) {
+  requireBoardAdmin(req);
+  const b = board(req);
+  const { userId } = addBoardMemberSchema.parse(req.body);
+
+  const orgMember = await prisma.organisationMember.findUnique({
+    where: { userId_organisationId: { userId, organisationId: b.organisationId } },
+    include: { user: publicUser },
+  });
+  if (!orgMember) throw badRequest("That user is not a member of this organisation");
+
+  const member = await prisma.boardMember.upsert({
+    where: { boardId_organisationMemberId: { boardId: b.id, organisationMemberId: orgMember.id } },
+    update: {},
+    create: { boardId: b.id, organisationMemberId: orgMember.id },
+  });
+  await publishBoardEvent(b.id, "MEMBER_ADDED", req.user!.id, { userId });
+  await publishUserEvent(userId, "ACCESS_CHANGED", req.user!.id, { boardId: b.id });
+  res.status(201).json({ id: member.id, userId, role: orgMember.role, user: orgMember.user });
+}
+
+export async function removeBoardMember(req: Request, res: Response) {
+  requireBoardAdmin(req);
+  const b = board(req);
+  const userId = param(req, "userId");
+  const result = await prisma.boardMember.deleteMany({
+    where: { boardId: b.id, organisationMember: { userId, organisationId: b.organisationId } },
+  });
+  if (result.count === 0) throw notFound("That user is not on this board");
+  await publishBoardEvent(b.id, "MEMBER_REMOVED", req.user!.id, { userId });
+  await publishUserEvent(userId, "ACCESS_CHANGED", req.user!.id, { boardId: b.id });
+  res.status(204).send();
+}
+
+// ---- statuses (columns)
 
 const statusSchema = z.object({
-  name: z.string().min(1).max(60),
-  type: z.enum([
-    "TODO",
-    "IN_PROGRESS",
-    "IN_REVIEW",
-    "BLOCKED",
-    "COMPLETED",
-    "APPROVED",
-    "REJECTED",
-  ]),
+  name: z.string().trim().min(1).max(60),
+  type: z.enum(STATUS_TYPES),
 });
 
-export async function createStatus(req: AuthedRequest, res: Response) {
+async function loadStatus(req: Request) {
+  const b = board(req);
+  const status = await prisma.taskStatus.findFirst({ where: { id: param(req, "statusId"), boardId: b.id } });
+  if (!status) throw notFound("Column not found");
+  return status;
+}
+
+export async function createStatus(req: Request, res: Response) {
+  requireBoardAdmin(req);
+  const b = board(req);
   const body = statusSchema.parse(req.body);
-  const boardId = req.params.boardId;
-
-  if (!boardId) {
-    return res.status(400).json({ error: "Board ID is required" });
-  }
-
-  const last = await prisma.taskStatus.findFirst({
-    where: { boardId },
-    orderBy: { position: "desc" },
-  });
-
+  const last = await prisma.taskStatus.findFirst({ where: { boardId: b.id }, orderBy: { position: "desc" } });
   const status = await prisma.taskStatus.create({
-    data: { ...body, boardId, position: nextPosition(last?.position ?? null) },
+    data: { ...body, boardId: b.id, position: nextPosition(last?.position) },
   });
-
-  await publishBoardEvent(status.boardId, "STATUS_CREATED", req.user.id, status);
+  await publishBoardEvent(b.id, "STATUS_CREATED", req.user!.id, status);
   res.status(201).json(status);
 }
 
-export async function updateStatus(req: AuthedRequest, res: Response) {
+export async function updateStatus(req: Request, res: Response) {
+  requireBoardAdmin(req);
+  const status = await loadStatus(req);
   const body = statusSchema.partial().parse(req.body);
-  const status = await prisma.taskStatus.update({ where: { id: req.params.statusId }, data: body });
-
-  await publishBoardEvent(status.boardId, "STATUS_UPDATED", req.user.id, status);
-  res.json(status);
+  const updated = await prisma.taskStatus.update({ where: { id: status.id }, data: body });
+  await publishBoardEvent(status.boardId, "STATUS_UPDATED", req.user!.id, updated);
+  res.json(updated);
 }
 
-const reorderStatusSchema = z.object({
+const reorderSchema = z.object({
   beforeId: z.string().uuid().nullable().optional(),
   afterId: z.string().uuid().nullable().optional(),
 });
 
-export async function reorderStatus(req: AuthedRequest, res: Response) {
-  const body = reorderStatusSchema.parse(req.body);
+export async function reorderStatus(req: Request, res: Response) {
+  requireBoardAdmin(req);
+  const status = await loadStatus(req);
+  const body = reorderSchema.parse(req.body);
 
-  const [before, after] = await Promise.all([
-    body.beforeId ? prisma.taskStatus.findUnique({ where: { id: body.beforeId } }) : null,
-    body.afterId ? prisma.taskStatus.findUnique({ where: { id: body.afterId } }) : null,
-  ]);
+  const neighbour = (id: string | null | undefined) =>
+    id ? prisma.taskStatus.findFirst({ where: { id, boardId: status.boardId } }) : Promise.resolve(null);
+  const [before, after] = await Promise.all([neighbour(body.beforeId), neighbour(body.afterId)]);
+  if ((body.beforeId && !before) || (body.afterId && !after)) throw badRequest("Neighbour columns must be on the same board");
 
-  const position = betweenPosition(before?.position, after?.position);
-  const status = await prisma.taskStatus.update({
-    where: { id: req.params.statusId },
-    data: { position },
-  });
+  let position = betweenPosition(before?.position, after?.position);
+  if (position === null) {
+    // Out of integer room — renumber the board's columns and slot in after `before`.
+    const columns = (await prisma.taskStatus.findMany({ where: { boardId: status.boardId }, orderBy: { position: "asc" } })).filter(
+      (c) => c.id !== status.id
+    );
+    const insertAt = before ? columns.findIndex((c) => c.id === before.id) + 1 : 0;
+    columns.splice(insertAt, 0, status);
+    await prisma.$transaction(
+      columns.map((c, i) => prisma.taskStatus.update({ where: { id: c.id }, data: { position: (i + 1) * POSITION_GAP } }))
+    );
+    position = (insertAt + 1) * POSITION_GAP;
+  }
 
-  await publishBoardEvent(status.boardId, "STATUS_REORDERED", req.user.id, status);
-  res.json(status);
+  const updated = await prisma.taskStatus.update({ where: { id: status.id }, data: { position } });
+  await publishBoardEvent(status.boardId, "STATUS_REORDERED", req.user!.id, updated);
+  res.json(updated);
 }
 
-export async function deleteStatus(req: AuthedRequest, res: Response) {
-  // Restrict-on-delete relation on Task.status means Prisma will throw
-  // (caught by errorHandler as P2003/known-request-error) if tasks still
-  // reference this status — force the client to move/delete tasks first.
-  const status = await prisma.taskStatus.delete({ where: { id: req.params.statusId } });
-  await publishBoardEvent(status.boardId, "STATUS_DELETED", req.user.id, { id: status.id });
+export async function deleteStatus(req: Request, res: Response) {
+  requireBoardAdmin(req);
+  const status = await loadStatus(req);
+  const taskCount = await prisma.task.count({ where: { statusId: status.id } });
+  if (taskCount > 0) throw conflict("Move or delete this column's tasks before deleting it");
+  const columnCount = await prisma.taskStatus.count({ where: { boardId: status.boardId } });
+  if (columnCount <= 1) throw conflict("A board needs at least one column");
+
+  await prisma.taskStatus.delete({ where: { id: status.id } });
+  await publishBoardEvent(status.boardId, "STATUS_DELETED", req.user!.id, { id: status.id });
   res.status(204).send();
 }

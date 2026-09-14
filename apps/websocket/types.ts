@@ -4,45 +4,41 @@ export interface AuthedUser {
   name: string;
 }
 
-export type BoardEventType =
-  | "TASK_CREATED"
-  | "TASK_UPDATED"
-  | "TASK_MOVED"
-  | "TASK_DELETED"
-  | "TASK_ASSIGNEE_CHANGED"
-  | "STATUS_CREATED"
-  | "STATUS_UPDATED"
-  | "STATUS_REORDERED"
-  | "STATUS_DELETED"
-  | "COMMENT_ADDED"
-  | "COMMENT_UPDATED"
-  | "COMMENT_DELETED"
-  | "BOARD_UPDATED"
-  | "MEMBER_ADDED"
-  | "MEMBER_REMOVED";
-
-export interface BoardEventPayload {
-  boardId: string;
-  type: BoardEventType;
-  actorId: string;
+/** Mirrors apps/backend/lib/eventBus.ts. */
+export interface RealtimeEvent {
+  scope: "board" | "org" | "user";
+  targetId: string;
+  type: string;
+  actorId: string | null;
   data: unknown;
   timestamp: string;
 }
 
-/** Client -> server frame shapes. */
-export type ClientMessage =
-  | { type: "board:join"; boardId: string }
-  | { type: "board:leave"; boardId: string }
-  | { type: "presence:cursor"; boardId: string; x: number; y: number }
-  | { type: "task:typing"; boardId: string; taskId: string; isTyping: boolean };
+/** A subscribable room: `board:<uuid>` or `org:<uuid>`. `user:<id>` is joined automatically. */
+export type Channel = `board:${string}` | `org:${string}` | `user:${string}`;
 
-/** Server -> client frame shapes. */
+export type ClientMessage =
+  | { type: "subscribe"; channel: string }
+  | { type: "unsubscribe"; channel: string }
+  | { type: "presence:cursor"; channel: string; x: number; y: number }
+  | { type: "task:typing"; channel: string; taskId: string; isTyping: boolean }
+  | { type: "ping" };
+
+export interface PresenceUser {
+  userId: string;
+  name: string;
+  color: string;
+}
+
 export type ServerMessage =
-  | { type: "board:event"; payload: BoardEventPayload }
-  | { type: "board:joined"; boardId: string }
-  | { type: "board:join_denied"; boardId: string; reason: string }
-  | { type: "presence:sync"; boardId: string; users: Array<{ userId: string; name: string; color: string }> }
-  | { type: "presence:cursor"; boardId: string; userId: string; name: string; color: string; x: number; y: number }
-  | { type: "presence:left"; boardId: string; userId: string }
-  | { type: "task:typing"; boardId: string; taskId: string; userId: string; isTyping: boolean }
+  | { type: "ready"; userId: string }
+  | { type: "event"; channel: string; event: RealtimeEvent }
+  | { type: "subscribed"; channel: string }
+  | { type: "subscribe_denied"; channel: string; reason: string }
+  | { type: "unsubscribed"; channel: string; reason?: string }
+  | { type: "presence:sync"; channel: string; users: PresenceUser[] }
+  | { type: "presence:cursor"; channel: string; userId: string; name: string; color: string; x: number; y: number }
+  | { type: "presence:left"; channel: string; userId: string }
+  | { type: "task:typing"; channel: string; taskId: string; userId: string; isTyping: boolean }
+  | { type: "pong" }
   | { type: "error"; message: string };

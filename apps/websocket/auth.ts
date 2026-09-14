@@ -1,22 +1,23 @@
-import jwt from "jsonwebtoken";
+import type Redis from "ioredis";
 import type { AuthedUser } from "./types";
 
+const TICKET_RE = /^[A-Za-z0-9_-]{16,128}$/;
+
 /**
- * Raw `ws` has no connection-time auth middleware like socket.io, so the
- * token travels as a query param on the upgrade URL:
- *   wss://ws.example.com/?token=<the same bearer JWT used against the REST API>
- * Same JWT_SECRET as apps/backend — a token issued by /auth/login there
- * authenticates the socket here too, no separate handshake.
+ * Sockets authenticate with a single-use ticket minted by the backend
+ * (POST /auth/ws-ticket), passed as `?ticket=`. GETDEL makes it one-shot,
+ * and the backend gives it a ~30s TTL — so a ticket that leaks into a proxy
+ * log is worthless by the time anyone reads it. The long-lived JWT never
+ * appears in a websocket URL.
  */
-export function verifyToken(token: string | null): AuthedUser | null {
-  if (!token) return null;
+export async function redeemTicket(redis: Redis, ticket: string | null): Promise<AuthedUser | null> {
+  if (!ticket || !TICKET_RE.test(ticket)) return null;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
-      sub: string;
-      email: string;
-      name?: string;
-    };
-    return { userId: decoded.sub, email: decoded.email, name: decoded.name ?? decoded.email };
+    const raw = await redis.getdel(`ws:ticket:${ticket}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AuthedUser>;
+    if (typeof parsed.userId !== "string" || typeof parsed.name !== "string") return null;
+    return { userId: parsed.userId, email: parsed.email ?? "", name: parsed.name };
   } catch {
     return null;
   }

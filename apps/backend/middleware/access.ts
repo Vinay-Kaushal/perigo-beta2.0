@@ -1,107 +1,102 @@
-import type { Response, NextFunction } from "express";
+import type { NextFunction, Request, Response } from "express";
+import type { OrganisationMember, OrganisationRole } from "db/client";
 import { prisma } from "../lib/prisma";
-import type { AuthedRequest } from "./auth";
+import { asyncHandler, forbidden, HttpError, notFound } from "../lib/http";
+import { currentUser } from "./auth";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const isUuid = (v: unknown): v is string => typeof v === "string" && UUID_RE.test(v);
+
+export const isOrgAdmin = (role: OrganisationRole) => role === "OWNER" || role === "ADMIN";
+
+export function getMembership(req: Request): OrganisationMember {
+  if (!req.membership) throw new HttpError(500, "Membership not loaded for this route");
+  return req.membership;
+}
 
 /**
- * Loads the caller's OrganisationMember row for :orgId (or the org that
- * owns :boardId / :teamId / :taskId) and attaches it to req. Every
- * downstream handler can then trust req.membership instead of
- * re-querying, and read req.membership.role for permission checks.
+ * Loads the caller's membership for :orgId. Org ids only ever come from the
+ * URL — never the body or query — so a request can't smuggle a different org.
+ * Non-members get 404 rather than 403 so org ids can't be probed.
  */
 export function requireOrgMember() {
-  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
-    const organisationId =
-      req.params.orgId ?? req.body.organisationId ?? req.query.organisationId;
-
-    if (!organisationId) {
-      return res.status(400).json({ error: "organisationId is required" });
-    }
+  return asyncHandler(async (req: Request, _res: Response, next: NextFunction) => {
+    const user = currentUser(req);
+    const orgId = req.params.orgId;
+    if (!isUuid(orgId)) throw notFound("Organisation not found");
 
     const membership = await prisma.organisationMember.findUnique({
-      where: { userId_organisationId: { userId: req.user.id, organisationId } },
+      where: { userId_organisationId: { userId: user.id, organisationId: orgId } },
     });
+    if (!membership) throw notFound("Organisation not found");
 
-    if (!membership) {
-      return res.status(403).json({ error: "Not a member of this organisation" });
-    }
-
-    (req as any).membership = membership;
+    req.membership = membership;
     next();
-  };
+  });
 }
 
-/** Resolves the board from params, verifies the caller is a board member, attaches both. */
-export function requireBoardMember() {
-  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
-    const boardId = req.params.boardId ?? req.params.id;
-    if (!boardId) return res.status(400).json({ error: "boardId is required" });
-
-    const board = await prisma.board.findUnique({ where: { id: boardId } });
-    if (!board) return res.status(404).json({ error: "Board not found" });
-
-    const orgMembership = await prisma.organisationMember.findUnique({
-      where: {
-        userId_organisationId: { userId: req.user.id, organisationId: board.organisationId },
-      },
-    });
-    if (!orgMembership) {
-      return res.status(403).json({ error: "Not a member of this board's organisation" });
-    }
-
-    const boardMembership = await prisma.boardMember.findUnique({
-      where: {
-        boardId_organisationMemberId: { boardId, organisationMemberId: orgMembership.id },
-      },
-    });
-
-    // OWNER/ADMIN of the org can act on any board even without an explicit
-    // BoardMember row; regular MEMBERs must be explicitly added to the board.
-    if (!boardMembership && orgMembership.role === "MEMBER") {
-      return res.status(403).json({ error: "Not a member of this board" });
-    }
-
-    (req as any).board = board;
-    (req as any).orgMembership = orgMembership;
-    (req as any).boardMembership = boardMembership;
+/** Restricts a route to specific organisation roles. Use after a membership loader. */
+export function requireOrgRole(...roles: OrganisationRole[]) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const membership = getMembership(req);
+    if (!roles.includes(membership.role)) return next(forbidden("Insufficient permissions"));
     next();
   };
 }
 
 /**
- * For routes keyed by :taskId (no boardId in the URL) — resolves the task's
- * board, then applies the same membership check as requireBoardMember().
- * Use on every /tasks/:taskId... route so a stray task id can't be probed
- * by someone outside that board's organisation.
+ * Board access rule, shared with the websocket service: OWNER/ADMIN reach
+ * every board in their org; MEMBERs need an explicit BoardMember row.
  */
-export function requireTaskAccess() {
-  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
-    const task = await prisma.task.findUnique({ where: { id: req.params.taskId } });
-    if (!task) return res.status(404).json({ error: "Task not found" });
+export async function resolveBoardAccess(userId: string, boardId: string) {
+  const board = await prisma.board.findUnique({ where: { id: boardId } });
+  if (!board) return null;
 
-    const board = await prisma.board.findUniqueOrThrow({ where: { id: task.boardId } });
-    const orgMembership = await prisma.organisationMember.findUnique({
-      where: {
-        userId_organisationId: { userId: req.user.id, organisationId: board.organisationId },
-      },
+  const membership = await prisma.organisationMember.findUnique({
+    where: { userId_organisationId: { userId, organisationId: board.organisationId } },
+  });
+  if (!membership) return null;
+
+  if (!isOrgAdmin(membership.role)) {
+    const boardMember = await prisma.boardMember.findUnique({
+      where: { boardId_organisationMemberId: { boardId, organisationMemberId: membership.id } },
     });
-    if (!orgMembership) {
-      return res.status(403).json({ error: "Not a member of this task's organisation" });
-    }
-
-    (req as any).task = task;
-    (req as any).board = board;
-    (req as any).orgMembership = orgMembership;
-    next();
-  };
+    if (!boardMember) return null;
+  }
+  return { board, membership };
 }
 
-/** Restricts a route to specific organisation roles. Use after requireOrgMember(). */
-export function requireOrgRole(...roles: Array<"OWNER" | "ADMIN" | "MEMBER">) {
-  return (req: AuthedRequest, res: Response, next: NextFunction) => {
-    const membership = (req as any).membership;
-    if (!membership || !roles.includes(membership.role)) {
-      return res.status(403).json({ error: "Insufficient permissions" });
-    }
+export function requireBoardAccess() {
+  return asyncHandler(async (req: Request, _res: Response, next: NextFunction) => {
+    const user = currentUser(req);
+    const boardId = req.params.boardId;
+    if (!isUuid(boardId)) throw notFound("Board not found");
+
+    const access = await resolveBoardAccess(user.id, boardId);
+    if (!access) throw notFound("Board not found");
+
+    req.board = access.board;
+    req.membership = access.membership;
     next();
-  };
+  });
+}
+
+/** For /tasks/:taskId routes — same rule as boards, resolved through the task's board. */
+export function requireTaskAccess() {
+  return asyncHandler(async (req: Request, _res: Response, next: NextFunction) => {
+    const user = currentUser(req);
+    const taskId = req.params.taskId;
+    if (!isUuid(taskId)) throw notFound("Task not found");
+
+    const task = await prisma.task.findUnique({ where: { id: taskId } });
+    if (!task) throw notFound("Task not found");
+
+    const access = await resolveBoardAccess(user.id, task.boardId);
+    if (!access) throw notFound("Task not found");
+
+    req.task = task;
+    req.board = access.board;
+    req.membership = access.membership;
+    next();
+  });
 }

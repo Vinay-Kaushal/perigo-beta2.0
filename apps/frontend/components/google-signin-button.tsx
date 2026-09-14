@@ -1,19 +1,17 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Script from "next/script";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
+import { errorMessage } from "@/lib/api";
 
 declare global {
   interface Window {
     google?: {
       accounts: {
         id: {
-          initialize: (config: {
-            client_id: string;
-            callback: (response: { credential: string }) => void;
-          }) => void;
+          initialize: (config: { client_id: string; callback: (response: { credential: string }) => void }) => void;
           renderButton: (parent: HTMLElement, options: Record<string, string>) => void;
         };
       };
@@ -21,56 +19,36 @@ declare global {
   }
 }
 
-export function GoogleSignInButton() {
+export function GoogleSignInButton({ next = "/dashboard" }: { next?: string }) {
   const { loginWithGoogle } = useAuth();
   const router = useRouter();
-  const buttonRef = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
 
   useEffect(() => {
-    if (!clientId || !buttonRef.current) return;
-
-    function render() {
-      if (!window.google || !buttonRef.current) return;
-      window.google.accounts.id.initialize({
-        client_id: clientId!,
-        callback: async ({ credential }) => {
-          try {
-            await loginWithGoogle(credential);
-            router.push("/dashboard");
-          } catch {
-            // The form below already shows a generic error state for
-            // password auth; a failed Google credential just leaves the
-            // button as-is so the person can retry.
-          }
-        },
-      });
-      window.google.accounts.id.renderButton(buttonRef.current, {
-        theme: "outline",
-        size: "large",
-        width: "320",
-      });
-    }
-
-    if (window.google) render();
-    else {
-      const interval = setInterval(() => {
-        if (window.google) {
-          render();
-          clearInterval(interval);
+    if (!clientId || !loaded || !window.google || !ref.current) return;
+    window.google.accounts.id.initialize({
+      client_id: clientId,
+      callback: async ({ credential }) => {
+        try {
+          await loginWithGoogle(credential);
+          router.replace(next);
+        } catch (err) {
+          setError(errorMessage(err, "Google sign-in failed"));
         }
-      }, 100);
-      return () => clearInterval(interval);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientId]);
+      },
+    });
+    window.google.accounts.id.renderButton(ref.current, { theme: "outline", size: "large", width: "384", text: "continue_with" });
+  }, [clientId, loaded, loginWithGoogle, next, router]);
 
-  if (!clientId) return null; // not configured — silently omit rather than show a broken button
-
+  if (!clientId) return null;
   return (
     <>
-      <Script src="https://accounts.google.com/gsi/client" strategy="afterInteractive" />
-      <div ref={buttonRef} className="flex justify-center" />
+      <Script src="https://accounts.google.com/gsi/client" strategy="afterInteractive" onLoad={() => setLoaded(true)} onReady={() => setLoaded(true)} />
+      <div ref={ref} className="flex min-h-[44px] justify-center" />
+      {error && <p className="mt-2 text-center text-xs text-danger">{error}</p>}
     </>
   );
 }
