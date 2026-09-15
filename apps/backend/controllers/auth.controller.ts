@@ -4,11 +4,13 @@ import bcrypt from "bcryptjs";
 import { prisma } from "../lib/prisma";
 import { env } from "../lib/env";
 import { redis } from "../lib/redis";
-import { randomToken, sha256, signAccessToken } from "../lib/tokens";
+import { randomToken, sha256, signAccessToken, type SessionContext } from "../lib/tokens";
 import { HttpError } from "../lib/http";
 import { clearSessionCookie, setSessionCookie } from "../lib/session";
-import { passwordResetEmail, sendMail, verificationEmail } from "../lib/mailer";
+import { passwordResetEmail, securityAlertEmail, sendMail, verificationEmail } from "../lib/mailer";
 import { currentUser } from "../middleware/auth";
+import { connectionForDomain, emailDomain } from "../services/ssoPolicy";
+import { consumeMfaChallenge, createMfaChallenge, loadMfaChallenge, remainingRecoveryCodes, verifySecondFactor } from "../services/mfa";
 
 const rounds = () => env().BCRYPT_ROUNDS;
 // Compared against when the email doesn't exist, so a miss costs the same
@@ -47,8 +49,8 @@ const RESET_TTL_MS = 60 * 60 * 1000;
  * Issues a session: the httpOnly cookie is what browsers use; the token in the
  * body is for non-browser API clients (the web app never stores it).
  */
-function session(res: Response, user: UserRow) {
-  const token = signAccessToken(user);
+export function session(res: Response, user: UserRow, context: SessionContext = { amr: ["pwd"] }) {
+  const token = signAccessToken(user, context);
   setSessionCookie(res, token);
   return {
     token,
@@ -56,7 +58,7 @@ function session(res: Response, user: UserRow) {
   };
 }
 
-const frontendUrl = (path: string) => `${env().FRONTEND_URL.replace(/\/$/, "")}${path}`;
+export const frontendUrl = (path: string) => `${env().FRONTEND_URL.replace(/\/$/, "")}${path}`;
 
 /** Creates a single-use token (only its hash is stored), invalidating earlier unused ones of the same type. */
 async function issueAuthToken(userId: string, type: "EMAIL_VERIFICATION" | "PASSWORD_RESET", ttlMs: number) {
@@ -109,24 +111,102 @@ const loginSchema = z.object({
   password: z.string().min(1).max(200),
 });
 
+/**
+ * People on a domain whose organisation enforces SSO can't use a password or
+ * Google — except that organisation's owners (break-glass). The answer depends
+ * only on the domain unless the credentials are valid, so it reveals nothing
+ * about which accounts exist.
+ */
+async function assertNoSsoEnforcement(email: string, verifiedUserId: string | null) {
+  const conn = await connectionForDomain(emailDomain(email));
+  if (!conn?.enforce) return;
+  if (verifiedUserId) {
+    const owner = await prisma.organisationMember.findFirst({
+      where: { userId: verifiedUserId, organisationId: conn.organisationId, role: "OWNER" },
+      select: { id: true },
+    });
+    if (owner) return;
+  }
+  throw new HttpError(403, `${conn.organisation.name} requires you to sign in with single sign-on`, "SSO_REQUIRED", {
+    organisation: conn.organisation,
+  });
+}
+
+/** Second step for accounts with 2FA: no session yet, just a short-lived challenge token. */
+async function mfaChallengeResponse(user: UserRow & { mfaEnabledAt: Date | null }, method: "pwd" | "google") {
+  if (!user.mfaEnabledAt) return null;
+  return { mfaRequired: true as const, mfaToken: await createMfaChallenge(user, method) };
+}
+
 export async function login(req: Request, res: Response) {
   const body = loginSchema.parse(req.body);
 
   const user = await prisma.user.findUnique({ where: { email: body.email } });
   const valid = await bcrypt.compare(body.password, user?.passwordHash ?? getDummyHash());
+  await assertNoSsoEnforcement(body.email, user && valid ? user.id : null);
   if (!user || !valid) throw new HttpError(401, "Invalid email or password", "INVALID_CREDENTIALS");
+
+  const challenge = await mfaChallengeResponse(user, "pwd");
+  if (challenge) return res.json(challenge);
 
   const updated = await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   res.json(session(res, updated));
+}
+
+const mfaVerifySchema = z
+  .object({
+    mfaToken: z.string().min(1).max(200),
+    code: z.string().trim().max(12).optional(),
+    recoveryCode: z.string().trim().max(32).optional(),
+  })
+  .refine((b) => !!b.code !== !!b.recoveryCode, "Enter an authentication code or a recovery code");
+
+/** Completes a sign-in that was paused for 2FA. */
+export async function verifyMfaLogin(req: Request, res: Response) {
+  const body = mfaVerifySchema.parse(req.body);
+  const lookup = await loadMfaChallenge(body.mfaToken);
+  if (!lookup.ok) {
+    throw lookup.reason === "too_many_attempts"
+      ? new HttpError(429, "Too many incorrect codes. Sign in again.", "MFA_CHALLENGE_EXPIRED")
+      : new HttpError(401, "This sign-in has expired. Sign in again.", "MFA_CHALLENGE_EXPIRED");
+  }
+  const { challenge } = lookup;
+
+  const user = await prisma.user.findUnique({ where: { id: challenge.userId } });
+  if (!user || user.tokenVersion !== challenge.tokenVersion) {
+    await consumeMfaChallenge(body.mfaToken);
+    throw new HttpError(401, "This sign-in has expired. Sign in again.", "MFA_CHALLENGE_EXPIRED");
+  }
+
+  const factor = await verifySecondFactor(user.id, body);
+  if (!factor) throw new HttpError(401, body.recoveryCode ? "That recovery code isn't valid" : "That code isn't valid", "INVALID_MFA_CODE");
+  if (!(await consumeMfaChallenge(body.mfaToken))) {
+    throw new HttpError(401, "This sign-in has expired. Sign in again.", "MFA_CHALLENGE_EXPIRED");
+  }
+
+  if (factor === "rec") {
+    const left = await remainingRecoveryCodes(user.id);
+    await sendMail(
+      securityAlertEmail(user.email, {
+        subject: "A recovery code was used to sign in",
+        intro: `Someone signed in to your perigo account with a recovery code. You have ${left} unused recovery code${left === 1 ? "" : "s"} left.`,
+        url: frontendUrl("/profile#security"),
+      })
+    );
+  }
+
+  const updated = await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+  res.json(session(res, updated, { amr: [challenge.method, factor] }));
 }
 
 export async function me(req: Request, res: Response) {
   const { id } = currentUser(req);
   const user = await prisma.user.findUniqueOrThrow({
     where: { id },
-    select: { id: true, email: true, name: true, avatarUrl: true, createdAt: true, lastLoginAt: true, emailVerifiedAt: true },
+    select: { id: true, email: true, name: true, avatarUrl: true, createdAt: true, lastLoginAt: true, emailVerifiedAt: true, mfaEnabledAt: true },
   });
-  res.json(user);
+  const { session: context } = currentUser(req);
+  res.json({ ...user, session: { methods: context.amr, sso: !!context.sso } });
 }
 
 const updateMeSchema = z.object({
@@ -167,7 +247,14 @@ export async function changePassword(req: Request, res: Response) {
     where: { id },
     data: { passwordHash, tokenVersion: { increment: 1 } },
   });
-  res.json(session(res, updated));
+  await sendMail(
+    securityAlertEmail(updated.email, {
+      subject: "Your perigo password was changed",
+      intro: "The password for your account was just changed, and every other session was signed out.",
+      url: frontendUrl("/profile#security"),
+    })
+  );
+  res.json(session(res, updated, currentUser(req).session));
 }
 
 /** "Sign out everywhere" — invalidates every token issued so far, including this one. */
@@ -207,7 +294,12 @@ const forgotSchema = z.object({ email: emailSchema });
 export async function forgotPassword(req: Request, res: Response) {
   const { email } = forgotSchema.parse(req.body);
   const user = await prisma.user.findUnique({ where: { email }, select: { id: true, email: true } });
-  if (user) {
+  // Accounts that must use SSO don't get a password reset (their owners, as break-glass, still do).
+  const ssoOnly = await assertNoSsoEnforcement(email, user?.id ?? null).then(
+    () => false,
+    () => true
+  );
+  if (user && !ssoOnly) {
     const token = await issueAuthToken(user.id, "PASSWORD_RESET", RESET_TTL_MS);
     await sendMail(passwordResetEmail(user.email, frontendUrl(`/reset-password?token=${token}`)));
   }
@@ -242,7 +334,7 @@ export async function createWsTicket(req: Request, res: Response) {
   const ticket = randomToken(24);
   await redis().set(
     `ws:ticket:${ticket}`,
-    JSON.stringify({ userId: user.id, email: user.email, name: user.name }),
+    JSON.stringify({ userId: user.id, email: user.email, name: user.name, mfaEnabled: user.mfaEnabled, ssoConnectionId: user.session.sso ?? null }),
     "EX",
     WS_TICKET_TTL_SEC
   );
@@ -280,6 +372,8 @@ export async function googleAuth(req: Request, res: Response) {
 
   const email = payload.email.toLowerCase();
   let user = await prisma.user.findUnique({ where: { email } });
+  // Google proved control of the address, so an existing account counts as verified for the owner exemption.
+  await assertNoSsoEnforcement(email, user?.id ?? null);
 
   if (!user) {
     // passwordHash is NOT NULL; a hash of random bytes matches no password,
@@ -296,9 +390,11 @@ export async function googleAuth(req: Request, res: Response) {
   }
 
   // Google verified the address, which is as good as our own verification email.
-  user = await prisma.user.update({
-    where: { id: user.id },
-    data: { lastLoginAt: new Date(), emailVerifiedAt: user.emailVerifiedAt ?? new Date() },
-  });
-  res.json(session(res, user));
+  if (!user.emailVerifiedAt) user = await prisma.user.update({ where: { id: user.id }, data: { emailVerifiedAt: new Date() } });
+
+  const challenge = await mfaChallengeResponse(user, "google");
+  if (challenge) return res.json(challenge);
+
+  user = await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+  res.json(session(res, user, { amr: ["google"] }));
 }

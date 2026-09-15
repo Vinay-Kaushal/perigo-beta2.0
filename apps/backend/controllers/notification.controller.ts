@@ -1,6 +1,8 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
+import type { Prisma } from "db/client";
 import { prisma } from "../lib/prisma";
+import { lockedOrganisationIdsForUser } from "../services/orgSecurity";
 import { publicUser } from "../lib/selects";
 import { notFound, param } from "../lib/http";
 import { publishUserEvent } from "../lib/eventBus";
@@ -15,11 +17,18 @@ const listQuerySchema = z.object({
   cursor: z.string().uuid().optional(),
 });
 
+/** Hides notifications from organisations this session is locked out of by their 2FA policy. */
+async function visibleNotifications(user: Parameters<typeof lockedOrganisationIdsForUser>[0]): Promise<Prisma.NotificationWhereInput> {
+  const locked = await lockedOrganisationIdsForUser(user);
+  return locked.length ? { userId: user.id, OR: [{ organisationId: null }, { organisationId: { notIn: locked } }] } : { userId: user.id };
+}
+
 export async function listNotifications(req: Request, res: Response) {
   const user = currentUser(req);
   const q = listQuerySchema.parse(req.query);
+  const visible = await visibleNotifications(user);
   const rows = await prisma.notification.findMany({
-    where: { userId: user.id, ...(q.unread === "true" ? { readAt: null } : {}) },
+    where: { ...visible, ...(q.unread === "true" ? { readAt: null } : {}) },
     include: { actor: publicUser, organisation: { select: { id: true, name: true } } },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: q.limit + 1,
@@ -27,13 +36,13 @@ export async function listNotifications(req: Request, res: Response) {
   });
   const hasMore = rows.length > q.limit;
   const items = hasMore ? rows.slice(0, q.limit) : rows;
-  const unreadCount = await prisma.notification.count({ where: { userId: user.id, readAt: null } });
+  const unreadCount = await prisma.notification.count({ where: { ...visible, readAt: null } });
   res.json({ items, unreadCount, nextCursor: hasMore ? items[items.length - 1]!.id : null });
 }
 
 export async function unreadCount(req: Request, res: Response) {
   const user = currentUser(req);
-  const count = await prisma.notification.count({ where: { userId: user.id, readAt: null } });
+  const count = await prisma.notification.count({ where: { ...(await visibleNotifications(user)), readAt: null } });
   res.json({ count });
 }
 

@@ -2,6 +2,8 @@ export interface AuthedUser {
   userId: string;
   email: string;
   name: string;
+  /** The SSO connection this session signed in through, if any (mirrors the backend session's `sso` claim). */
+  ssoConnectionId: string | null;
 }
 
 /** Mirrors apps/backend/lib/eventBus.ts. */

@@ -3,6 +3,7 @@ import type { OrganisationMember, OrganisationRole } from "db/client";
 import { prisma } from "../lib/prisma";
 import { asyncHandler, forbidden, HttpError, notFound } from "../lib/http";
 import { currentUser } from "./auth";
+import { blockedByMfaPolicy, mfaRequiredError, orgPolicySelect } from "../services/orgSecurity";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isUuid = (v: unknown): v is string => typeof v === "string" && UUID_RE.test(v);
@@ -25,10 +26,16 @@ export function requireOrgMember() {
     const orgId = req.params.orgId;
     if (!isUuid(orgId)) throw notFound("Organisation not found");
 
-    const membership = await prisma.organisationMember.findUnique({
+    const row = await prisma.organisationMember.findUnique({
       where: { userId_organisationId: { userId: user.id, organisationId: orgId } },
+      include: { organisation: { select: orgPolicySelect } },
     });
-    if (!membership) throw notFound("Organisation not found");
+    if (!row) throw notFound("Organisation not found");
+
+    const { organisation, ...membership } = row;
+    // Leaving is always possible, even while locked out by the org's 2FA policy.
+    const leaving = req.method === "DELETE" && req.path === "/members/me";
+    if (!leaving && blockedByMfaPolicy(user, organisation)) throw mfaRequiredError(organisation);
 
     req.membership = membership;
     next();
@@ -66,6 +73,11 @@ export async function resolveBoardAccess(userId: string, boardId: string) {
   return { board, membership };
 }
 
+async function assertOrgPolicy(req: Request, organisationId: string) {
+  const org = await prisma.organisation.findUniqueOrThrow({ where: { id: organisationId }, select: orgPolicySelect });
+  if (blockedByMfaPolicy(currentUser(req), org)) throw mfaRequiredError(org);
+}
+
 export function requireBoardAccess() {
   return asyncHandler(async (req: Request, _res: Response, next: NextFunction) => {
     const user = currentUser(req);
@@ -74,6 +86,7 @@ export function requireBoardAccess() {
 
     const access = await resolveBoardAccess(user.id, boardId);
     if (!access) throw notFound("Board not found");
+    await assertOrgPolicy(req, access.board.organisationId);
 
     req.board = access.board;
     req.membership = access.membership;
@@ -93,6 +106,7 @@ export function requireTaskAccess() {
 
     const access = await resolveBoardAccess(user.id, task.boardId);
     if (!access) throw notFound("Task not found");
+    await assertOrgPolicy(req, access.board.organisationId);
 
     req.task = task;
     req.board = access.board;

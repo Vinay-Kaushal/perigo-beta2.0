@@ -142,3 +142,16 @@ export function passwordResetEmail(to: string, url: string) {
     footer: "This link expires in 1 hour and can be used once. If you didn't ask for this, ignore this email — your password won't change.",
   });
 }
+
+/** Account security changes are always emailed, so a hijacked session can't quietly weaken an account. */
+export function securityAlertEmail(to: string, opts: { subject: string; intro: string; url: string }) {
+  return actionEmail({
+    to,
+    subject: opts.subject,
+    heading: opts.subject,
+    intro: opts.intro,
+    cta: "Review account security",
+    url: opts.url,
+    footer: "If this wasn't you, reset your password straight away and tell your organisation's admin.",
+  });
+}

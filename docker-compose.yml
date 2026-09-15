@@ -60,6 +60,10 @@ services:
       EMAIL_BATCH_WINDOW_SEC: ${EMAIL_BATCH_WINDOW_SEC:-60}
       MAIL_FROM: ${MAIL_FROM:-perigo <no-reply@perigo.local>}
       RATE_LIMIT_AUTH_MAX: ${RATE_LIMIT_AUTH_MAX:-10}
+      # Encrypts 2FA secrets and SSO client secrets at rest. Keep it safe and stable: losing it means members re-enrol 2FA.
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Set DATA_ENCRYPTION_KEY in .env (scripts/docker-up.sh generates one)}
+      # true lets SSO issuers live on your private network (e.g. a self-hosted Keycloak).
+      SSO_ALLOW_PRIVATE_NETWORK: ${SSO_ALLOW_PRIVATE_NETWORK:-false}
     volumes:
       - uploads:/data/uploads
     ports:

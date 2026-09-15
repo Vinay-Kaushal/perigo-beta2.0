@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
+import { lockedOrganisationIds } from "../services/orgSecurity";
 import { publicUser } from "../lib/selects";
 import { badRequest, conflict, forbidden, notFound, param } from "../lib/http";
 import { publishOrgEvent, publishUserEvent } from "../lib/eventBus";
@@ -47,7 +48,8 @@ export async function listMyOrganisations(req: Request, res: Response) {
     include: { organisation: { include: { _count: { select: { members: true, boards: true, tickets: true } } } } },
     orderBy: { joinedAt: "asc" },
   });
-  res.json(memberships.map((m) => ({ ...m.organisation, myRole: m.role })));
+  const locked = await lockedOrganisationIds(user, memberships.map((m) => m.organisationId));
+  res.json(memberships.map((m) => ({ ...m.organisation, myRole: m.role, locked: locked.has(m.organisationId) })));
 }
 
 export async function getOrganisation(req: Request, res: Response) {

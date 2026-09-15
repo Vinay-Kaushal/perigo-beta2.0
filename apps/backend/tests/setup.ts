@@ -36,5 +36,9 @@ Object.assign(process.env, {
   RATE_LIMIT_USER_MAX: "100000",
   RATE_LIMIT_BAD_AUTH_MAX: "60",
   GOOGLE_CLIENT_ID: "",
+  // The mock identity provider runs on http://localhost; tests of the SSRF guard switch these off.
+  SSO_ALLOW_HTTP_ISSUERS: "true",
+  SSO_ALLOW_PRIVATE_NETWORK: "true",
+  SSO_DOMAIN_VERIFICATION: "dns",
 });
 delete process.env.RESEND_API_KEY;

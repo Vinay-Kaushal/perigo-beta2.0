@@ -122,6 +122,11 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5434/perigo_e2e_test
       REDIS_URL: redis://localhost:6381
       JWT_SECRET: ci-e2e-secret-not-used-anywhere-else-0123456789
+      # SSO against the mock identity provider on http://localhost:4010, with DNS checks skipped.
+      SSO_ALLOW_HTTP_ISSUERS: "true"
+      SSO_ALLOW_PRIVATE_NETWORK: "true"
+      SSO_DOMAIN_VERIFICATION: skip
+      E2E_MOCK_IDP_URL: http://localhost:4010
       CORS_ORIGIN: http://localhost:3000
       FRONTEND_URL: http://localhost:3000
       WS_ALLOWED_ORIGINS: http://localhost:3000
@@ -156,11 +161,12 @@ jobs:
           (cd apps/backend && PORT=4000 bun index.ts > /tmp/api.log 2>&1 &)
           (cd apps/websocket && WS_PORT=4001 bun index.ts > /tmp/ws.log 2>&1 &)
           (cd apps/frontend && npx next start -p 3000 > /tmp/web.log 2>&1 &)
+          (cd apps/backend && MOCK_OIDC_PORT=4010 bun scripts/mock-oidc.ts > /tmp/idp.log 2>&1 &)
           for _ in $(seq 1 60); do
-            curl -sf http://localhost:4000/ready > /dev/null && curl -sf http://localhost:4001/health > /dev/null && curl -sf -o /dev/null http://localhost:3000/login && exit 0
+            curl -sf http://localhost:4000/ready > /dev/null && curl -sf http://localhost:4001/health > /dev/null && curl -sf -o /dev/null http://localhost:3000/login && curl -sf -o /dev/null http://localhost:4010/.well-known/openid-configuration && exit 0
             sleep 1
           done
-          echo "Stack did not become ready"; tail -50 /tmp/api.log /tmp/ws.log /tmp/web.log; exit 1
+          echo "Stack did not become ready"; tail -50 /tmp/api.log /tmp/ws.log /tmp/web.log /tmp/idp.log; exit 1
 
       - name: Install Playwright browser
         working-directory: apps/frontend
@@ -182,7 +188,7 @@ jobs:
 
       - name: Server logs
         if: failure()
-        run: tail -100 /tmp/api.log /tmp/ws.log /tmp/web.log
+        run: tail -100 /tmp/api.log /tmp/ws.log /tmp/web.log /tmp/idp.log
 
   docker:
     name: Docker images build
@@ -195,4 +201,5 @@ jobs:
       - name: Build all compose targets
         env:
           JWT_SECRET: ci-build-only
+          DATA_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
         run: docker compose build

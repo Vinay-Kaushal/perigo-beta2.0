@@ -5,6 +5,7 @@ import { currentUser } from "../middleware/auth";
 import { isOrgAdmin } from "../middleware/access";
 import { OPEN_STATUSES, isResponseBreached, isSlaBreached, ticketKey } from "../domain/tickets";
 import { goalWithProgress } from "./goal.controller";
+import { lockedOrganisationIds } from "../services/orgSecurity";
 
 const DAY = 24 * 60 * 60 * 1000;
 const PRIORITY_RANK = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 } as const;
@@ -22,13 +23,16 @@ export async function myDashboard(req: Request, res: Response) {
     include: { organisation: { include: { _count: { select: { members: true } } } } },
     orderBy: { joinedAt: "asc" },
   });
-  const orgIds = memberships.map((m) => m.organisationId);
-  const adminOrgIds = memberships.filter((m) => isOrgAdmin(m.role)).map((m) => m.organisationId);
+  // Orgs this session is locked out of (2FA policy) are listed, but none of their content is aggregated.
+  const locked = await lockedOrganisationIds(user, memberships.map((m) => m.organisationId));
+  const orgIds = memberships.map((m) => m.organisationId).filter((id) => !locked.has(id));
+  const adminOrgIds = memberships.filter((m) => isOrgAdmin(m.role) && !locked.has(m.organisationId)).map((m) => m.organisationId);
   const orgById = new Map(memberships.map((m) => [m.organisationId, m.organisation]));
   const openTicket = { organisationId: { in: orgIds }, status: { in: OPEN_STATUSES } };
   // Members only see tasks on boards they belong to.
   const taskScope = {
     board: {
+      organisationId: { in: orgIds },
       OR: [
         { organisationId: { in: adminOrgIds } },
         { members: { some: { organisationMember: { userId: user.id } } } },
@@ -110,6 +114,7 @@ export async function myDashboard(req: Request, res: Response) {
       membersCount: m.organisation._count.members,
       openTickets: openByOrgMap.get(m.organisationId) ?? 0,
       pendingApprovals: isOrgAdmin(m.role) ? (joinMap.get(m.organisationId) ?? 0) + (expenseMap.get(m.organisationId) ?? 0) : 0,
+      locked: locked.has(m.organisationId),
     })),
     tickets: {
       assignedOpen: assignedTickets.length,

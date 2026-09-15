@@ -8,7 +8,7 @@ import { redis } from "../lib/redis";
 import { outbox } from "../lib/mailer";
 
 /** Fields that must never appear in any API response. */
-const SECRET_FIELDS = ["passwordHash", "tokenVersion", "tokenHash"];
+const SECRET_FIELDS = ["passwordHash", "tokenVersion", "tokenHash", "mfaSecret", "mfaLastStep", "codeHash", "clientSecret", "verificationToken"];
 
 let server: Server | null = null;
 let baseUrl = "";
@@ -52,7 +52,7 @@ export interface ApiResponse<T = any> {
 export async function request<T = any>(
   method: string,
   path: string,
-  opts: { token?: string; body?: unknown; headers?: Record<string, string>; raw?: string | Uint8Array } = {}
+  opts: { token?: string; body?: unknown; headers?: Record<string, string>; raw?: string | Uint8Array; redirect?: "manual" } = {}
 ): Promise<ApiResponse<T>> {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
@@ -62,6 +62,7 @@ export async function request<T = any>(
       ...opts.headers,
     },
     body: opts.raw ?? (opts.body !== undefined ? JSON.stringify(opts.body) : undefined),
+    ...(opts.redirect ? { redirect: opts.redirect } : {}),
   });
   const contentType = res.headers.get("content-type") ?? "";
   const binary = contentType.includes("application/pdf") || contentType.startsWith("image/") || !!res.headers.get("content-disposition");
@@ -112,8 +113,8 @@ export function tokenFromOutbox(to: string, path: string) {
 }
 
 /** Registers and (by default) verifies the email through the real emailed link. */
-export async function registerUser(name = "User", opts: { verify?: boolean } = {}): Promise<TestUser> {
-  const email = `${name.toLowerCase().replace(/\W+/g, "")}-${uid()}@example.com`;
+export async function registerUser(name = "User", opts: { verify?: boolean; domain?: string } = {}): Promise<TestUser> {
+  const email = `${name.toLowerCase().replace(/\W+/g, "")}-${uid()}@${opts.domain ?? "example.com"}`;
   const res = await request("POST", "/auth/register", { body: { email, password: PASSWORD, name } });
   expect(res.status).toBe(201);
   if (opts.verify !== false) {

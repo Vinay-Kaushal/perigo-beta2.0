@@ -17,7 +17,12 @@ export async function redeemTicket(redis: Redis, ticket: string | null): Promise
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<AuthedUser>;
     if (typeof parsed.userId !== "string" || typeof parsed.name !== "string") return null;
-    return { userId: parsed.userId, email: parsed.email ?? "", name: parsed.name };
+    return {
+      userId: parsed.userId,
+      email: parsed.email ?? "",
+      name: parsed.name,
+      ssoConnectionId: typeof parsed.ssoConnectionId === "string" ? parsed.ssoConnectionId : null,
+    };
   } catch {
     return null;
   }

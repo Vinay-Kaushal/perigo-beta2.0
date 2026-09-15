@@ -6,7 +6,9 @@ export class ApiError extends Error {
     public status: number,
     message: string,
     public code?: string,
-    public issues?: { fieldErrors?: Record<string, string[]>; formErrors?: string[] }
+    public issues?: { fieldErrors?: Record<string, string[]>; formErrors?: string[] },
+    /** Machine-readable context from the API, e.g. which organisation requires SSO or 2FA. */
+    public details?: Record<string, unknown>
   ) {
     super(message);
   }
@@ -18,8 +20,8 @@ export function safeRedirect(next: string | null | undefined, fallback = "/dashb
   return next;
 }
 
-let onUnauthorized: (() => void) | null = null;
-export function setUnauthorizedHandler(handler: () => void) {
+let onUnauthorized: ((error: ApiError) => void) | null = null;
+export function setUnauthorizedHandler(handler: (error: ApiError) => void) {
   onUnauthorized = handler;
 }
 
@@ -31,7 +33,7 @@ export function setUnauthorizedHandler(handler: () => void) {
 const baseHeaders = { "X-CSRF-Protection": "1" };
 
 // 401s on these paths are expected (checking for a session, bad credentials) and must not bounce to /login.
-const QUIET_401 = ["/auth/me", "/auth/login", "/auth/register", "/auth/google", "/auth/reset-password", "/auth/verify-email", "/email/unsubscribe"];
+const QUIET_401 = ["/auth/me", "/auth/login", "/auth/register", "/auth/google", "/auth/mfa/verify", "/auth/reset-password", "/auth/verify-email", "/email/unsubscribe"];
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   let res: Response;
@@ -50,11 +52,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    if (res.status === 401 && !QUIET_401.some((p) => path.startsWith(p))) onUnauthorized?.();
     const firstFieldError = data?.issues?.fieldErrors
       ? Object.entries(data.issues.fieldErrors as Record<string, string[]>).map(([f, m]) => `${f}: ${m[0]}`)[0]
       : undefined;
-    throw new ApiError(res.status, firstFieldError ?? data?.error ?? `Request failed (${res.status})`, data?.code, data?.issues);
+    const error = new ApiError(res.status, firstFieldError ?? data?.error ?? `Request failed (${res.status})`, data?.code, data?.issues, data?.details);
+    if (res.status === 401 && !QUIET_401.some((p) => path.startsWith(p))) onUnauthorized?.(error);
+    throw error;
   }
   return data as T;
 }
@@ -85,4 +88,17 @@ export async function downloadFile(path: string, filename: string) {
 
 export function errorMessage(err: unknown, fallback = "Something went wrong") {
   return err instanceof ApiError ? err.message : fallback;
+}
+
+/** Full-page navigation into single sign-on: the API redirects to the organisation's identity provider. */
+export function ssoStartUrl(email: string, next: string) {
+  return `${API_URL}/auth/sso/start?${new URLSearchParams({ email, next: safeRedirect(next) })}`;
+}
+
+/** Where to send someone whose session no longer satisfies their organisation's SSO policy. */
+export function ssoRequiredLoginUrl(error: ApiError, next: string) {
+  const org = (error.details?.organisation as { name?: string } | undefined)?.name;
+  const params = new URLSearchParams({ sso: "required", next: safeRedirect(next) });
+  if (org) params.set("org", org);
+  return `/login?${params}`;
 }

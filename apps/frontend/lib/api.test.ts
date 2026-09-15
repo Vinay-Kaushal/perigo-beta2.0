@@ -71,6 +71,19 @@ describe("request", () => {
     expect(signedOut).toBe(1);
   });
 
+  test("the sign-out handler receives the error, with the API's details", async () => {
+    let received: ApiError | null = null;
+    setUnauthorizedHandler((e) => (received = e));
+    respond(401, { error: "Acme requires single sign-on", code: "SSO_REQUIRED", details: { organisation: { name: "Acme" } } });
+    const thrown = await api.get("/organisations").catch((e) => e);
+    expect(thrown.details).toEqual({ organisation: { name: "Acme" } });
+    expect(received!.code).toBe("SSO_REQUIRED");
+    // A wrong 2FA code at sign-in is an expected 401, not a reason to sign out.
+    received = null;
+    await api.post("/auth/mfa/verify", {}).catch(() => {});
+    expect(received).toBeNull();
+  });
+
   test("network failures become a friendly ApiError", async () => {
     globalThis.fetch = mock(async () => {
       throw new TypeError("fetch failed");

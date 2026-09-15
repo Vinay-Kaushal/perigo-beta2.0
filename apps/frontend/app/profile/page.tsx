@@ -14,6 +14,13 @@ import { Avatar } from "@/components/ui/avatar";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { fullDate } from "@/lib/utils";
 import { NotificationPreferencesCard } from "@/components/notification-preferences";
+import { TwoFactorCard } from "@/components/two-factor-card";
+
+const METHOD_LABELS: Record<string, string> = { pwd: "password", google: "Google", otp: "authenticator code", rec: "recovery code", sso: "single sign-on" };
+
+function describeSession(methods: string[]) {
+  return methods.length ? `signed in with ${methods.map((m) => METHOD_LABELS[m] ?? m).join(" + ")}` : "signed in";
+}
 
 export default function ProfilePage() {
   const { user, refreshUser, adoptSession, logoutEverywhere } = useAuth();
@@ -101,6 +108,8 @@ export default function ProfilePage() {
 
         <NotificationPreferencesCard />
 
+        <TwoFactorCard onChange={refreshUser} />
+
         <Card>
           <CardHeader title="Password" description="Changing your password signs you out of every other device." />
           <form onSubmit={changePassword} className="grid gap-4 p-4 sm:grid-cols-3">
@@ -130,6 +139,7 @@ export default function ProfilePage() {
                 <p className="text-ink">Sign out everywhere</p>
                 <p className="text-xs">Immediately revokes access on every device and browser, including this one.</p>
                 {me?.lastLoginAt && <p className="mt-1 text-xs text-ink-faint">Last sign-in {fullDate(me.lastLoginAt)}</p>}
+                {me?.session && <p className="text-xs text-ink-faint">This session: {describeSession(me.session.methods)}</p>}
               </div>
             </div>
             <Button variant="secondary" onClick={() => setSignOutAll(true)}>

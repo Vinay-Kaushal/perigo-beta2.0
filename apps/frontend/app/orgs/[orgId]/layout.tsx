@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ShieldOff } from "lucide-react";
+import { ShieldAlert, ShieldOff } from "lucide-react";
 import { useDebouncedRevalidate, useOrg } from "@/lib/hooks";
 import { useChannelEvents } from "@/lib/realtime";
 import { ApiError } from "@/lib/api";
@@ -21,6 +21,28 @@ export default function OrgLayout({ children }: { children: React.ReactNode }) {
 
   useChannelEvents(orgId ? `org:${orgId}` : null, revalidateOrg);
 
+  if (error instanceof ApiError && error.code === "MFA_REQUIRED") {
+    const name = (error.details?.organisation as { name?: string } | undefined)?.name ?? "This organisation";
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center px-4">
+        <EmptyState
+          icon={ShieldAlert}
+          title={`${name} requires two-factor authentication`}
+          description="Its admins require every member to protect their account with an authenticator app. It takes about a minute to set up."
+          action={
+            <div className="flex flex-wrap justify-center gap-2">
+              <Link href="/profile#security">
+                <Button>Set up two-factor authentication</Button>
+              </Link>
+              <Link href="/orgs">
+                <Button variant="secondary">Back to organisations</Button>
+              </Link>
+            </div>
+          }
+        />
+      </div>
+    );
+  }
   if (error instanceof ApiError && (error.status === 404 || error.status === 403)) {
     return (
       <div className="flex min-h-[70vh] items-center justify-center px-4">

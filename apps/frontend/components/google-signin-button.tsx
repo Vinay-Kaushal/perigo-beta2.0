@@ -19,7 +19,7 @@ declare global {
   }
 }
 
-export function GoogleSignInButton({ next = "/dashboard" }: { next?: string }) {
+export function GoogleSignInButton({ next = "/dashboard", onMfaRequired }: { next?: string; onMfaRequired?: (mfaToken: string) => void }) {
   const { loginWithGoogle } = useAuth();
   const router = useRouter();
   const ref = useRef<HTMLDivElement>(null);
@@ -33,7 +33,11 @@ export function GoogleSignInButton({ next = "/dashboard" }: { next?: string }) {
       client_id: clientId,
       callback: async ({ credential }) => {
         try {
-          await loginWithGoogle(credential);
+          const challenge = await loginWithGoogle(credential);
+          if (challenge) {
+            if (onMfaRequired) return onMfaRequired(challenge.mfaToken);
+            return setError("This account uses two-factor authentication. Sign in from the sign-in page.");
+          }
           router.replace(next);
         } catch (err) {
           setError(errorMessage(err, "Google sign-in failed"));
@@ -41,7 +45,7 @@ export function GoogleSignInButton({ next = "/dashboard" }: { next?: string }) {
       },
     });
     window.google.accounts.id.renderButton(ref.current, { theme: "outline", size: "large", width: "384", text: "continue_with" });
-  }, [clientId, loaded, loginWithGoogle, next, router]);
+  }, [clientId, loaded, loginWithGoogle, next, router, onMfaRequired]);
 
   if (!clientId) return null;
   return (

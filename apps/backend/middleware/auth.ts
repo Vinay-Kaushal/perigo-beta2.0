@@ -5,6 +5,7 @@ import { HttpError } from "../lib/http";
 import { CSRF_HEADER, SESSION_COOKIE, readCookie } from "../lib/session";
 import { env } from "../lib/env";
 import { hitLimit } from "./rateLimit";
+import { unmetSsoRequirement } from "../services/ssoPolicy";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -50,12 +51,22 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   try {
     const user = await prisma.user.findUnique({
       where: { id: claims.sub },
-      select: { id: true, email: true, name: true, tokenVersion: true, emailVerifiedAt: true },
+      select: { id: true, email: true, name: true, tokenVersion: true, emailVerifiedAt: true, mfaEnabledAt: true },
     });
     if (!user || user.tokenVersion !== claims.tv) {
       return rejectCredentials(req, res, "Session is no longer valid");
     }
-    req.user = { id: user.id, email: user.email, name: user.name, emailVerified: !!user.emailVerifiedAt };
+    const session = { amr: claims.amr, sso: claims.sso };
+    // An organisation that enforces SSO for this user's email domain only accepts sessions from its identity provider.
+    const sso = await unmetSsoRequirement(user, session);
+    if (sso) {
+      return res.status(401).json({
+        error: `${sso.organisation.name} requires you to sign in with single sign-on`,
+        code: "SSO_REQUIRED",
+        details: { organisation: sso.organisation },
+      });
+    }
+    req.user = { id: user.id, email: user.email, name: user.name, emailVerified: !!user.emailVerifiedAt, mfaEnabled: !!user.mfaEnabledAt, session };
     next();
   } catch (err) {
     next(err);

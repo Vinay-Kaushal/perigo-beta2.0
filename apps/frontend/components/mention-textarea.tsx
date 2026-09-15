@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Textarea } from "@/components/ui/input";
 import { Avatar } from "@/components/ui/avatar";
 import { activeMentionQuery, matchCandidates, toTokens, type MentionCandidate } from "@/lib/mentions";
@@ -32,6 +32,17 @@ export const MentionTextarea = forwardRef<MentionTextareaHandle, Props>(function
   const [picked, setPicked] = useState<MentionCandidate[]>(initialMentions);
   const [query, setQuery] = useState<{ query: string; start: number } | null>(null);
   const [index, setIndex] = useState(0);
+  // Where the caret belongs after a mention is inserted. Applied in a layout effect, i.e. in the same
+  // commit as the new value — setting it later (e.g. next frame) let fast typing land at the end of the text.
+  const pendingCaret = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    const el = textarea.current;
+    if (pendingCaret.current === null || !el) return;
+    el.focus();
+    el.setSelectionRange(pendingCaret.current, pendingCaret.current);
+    pendingCaret.current = null;
+  }, [value]);
 
   useImperativeHandle(ref, () => ({
     serialize: () => toTokens(value, picked),
@@ -52,14 +63,10 @@ export const MentionTextarea = forwardRef<MentionTextareaHandle, Props>(function
     const caret = el.selectionStart ?? value.length;
     const insert = `@${person.name} `;
     const next = value.slice(0, query.start) + insert + value.slice(caret);
+    pendingCaret.current = query.start + insert.length;
     onValueChange(next);
     setPicked((p) => (p.some((x) => x.id === person.id) ? p : [...p, person]));
     setQuery(null);
-    requestAnimationFrame(() => {
-      const pos = query.start + insert.length;
-      el.focus();
-      el.setSelectionRange(pos, pos);
-    });
   }
 
   const open = query !== null && matches.length > 0;

@@ -19,6 +19,9 @@ import * as dashboard from "../controllers/dashboard.controller";
 import * as notifications from "../controllers/notification.controller";
 import * as attachments from "../controllers/attachment.controller";
 import * as sla from "../controllers/sla.controller";
+import * as mfa from "../controllers/mfa.controller";
+import * as sso from "../controllers/sso.controller";
+import * as security from "../controllers/orgSecurity.controller";
 
 const ADMIN = ["OWNER", "ADMIN"] as const;
 const uploadLimiter = rateLimit({ name: "upload", windowSec: 60, max: () => 60, key: (req) => req.user!.id });
@@ -33,12 +36,18 @@ const loginLimiter = rateLimit({ name: "login", windowSec: 15 * 60, max: () => e
 const signupLimiter = rateLimit({ name: "signup", windowSec: 60 * 60, max: () => env().RATE_LIMIT_SIGNUP_MAX });
 const inviteLookupLimiter = rateLimit({ name: "invite-lookup", windowSec: 60, max: () => env().RATE_LIMIT_TOKEN_MAX });
 const verifyLimiter = rateLimit({ name: "verify-email", windowSec: 60, max: () => env().RATE_LIMIT_TOKEN_MAX });
+const ssoLimiter = rateLimit({ name: "sso", windowSec: 60, max: () => env().RATE_LIMIT_TOKEN_MAX });
 
 publicRouter.post("/auth/register", signupLimiter, h(auth.register));
 publicRouter.post("/auth/login", loginLimiter, h(auth.login));
 publicRouter.post("/auth/google", loginLimiter, h(auth.googleAuth));
+// Each challenge also allows only a handful of attempts (services/mfa.ts).
+publicRouter.post("/auth/mfa/verify", rateLimit({ name: "mfa-verify", windowSec: 15 * 60, max: () => env().RATE_LIMIT_AUTH_MAX * 3 }), h(auth.verifyMfaLogin));
 publicRouter.get("/invitations/:token", inviteLookupLimiter, h(invites.previewInvitation));
 publicRouter.post("/auth/logout", h(auth.logout));
+// Single sign-on: browser navigations (GET), not XHR — they end in redirects.
+publicRouter.get("/auth/sso/start", ssoLimiter, h(sso.startSso));
+publicRouter.get("/auth/sso/callback", ssoLimiter, h(sso.ssoCallback));
 publicRouter.post("/email/unsubscribe", rateLimit({ name: "unsubscribe", windowSec: 60, max: () => env().RATE_LIMIT_TOKEN_MAX }), h(notifications.unsubscribe));
 publicRouter.post("/auth/verify-email", verifyLimiter, h(auth.verifyEmail));
 publicRouter.post("/auth/forgot-password", loginLimiter, h(auth.forgotPassword));
@@ -56,6 +65,12 @@ privateRouter.patch("/auth/me", h(auth.updateMe));
 privateRouter.post("/auth/change-password", loginLimiter, h(auth.changePassword));
 privateRouter.post("/auth/logout-all", h(auth.logoutAll));
 privateRouter.post("/auth/ws-ticket", h(auth.createWsTicket));
+const mfaLimiter = rateLimit({ name: "mfa-manage", windowSec: 15 * 60, max: () => env().RATE_LIMIT_AUTH_MAX, key: (req) => req.user!.id });
+privateRouter.get("/auth/mfa", h(mfa.getMfaStatus));
+privateRouter.post("/auth/mfa/setup", mfaLimiter, h(mfa.beginMfaSetup));
+privateRouter.post("/auth/mfa/enable", mfaLimiter, h(mfa.enableMfa));
+privateRouter.post("/auth/mfa/disable", mfaLimiter, h(mfa.disableMfa));
+privateRouter.post("/auth/mfa/recovery-codes", mfaLimiter, h(mfa.regenerateRecoveryCodes));
 privateRouter.post("/auth/resend-verification", rateLimit({ name: "resend-verification", windowSec: 15 * 60, max: () => 5, key: (req) => req.user!.id }), h(auth.resendVerification));
 
 // Personal
@@ -83,6 +98,15 @@ org.get("/", h(orgs.getOrganisation));
 org.patch("/", requireOrgRole(...ADMIN), h(orgs.updateOrganisation));
 org.delete("/", requireOrgRole("OWNER"), h(orgs.deleteOrganisation));
 org.get("/audit-logs", requireOrgRole(...ADMIN), h(orgs.listAuditLogs));
+
+org.get("/security", requireOrgRole(...ADMIN), h(security.getSecurity));
+org.patch("/security", requireOrgRole("OWNER"), h(security.updateSecurityPolicy));
+org.post("/domains", requireOrgRole("OWNER"), h(security.addDomain));
+org.post("/domains/:domainId/verify", requireOrgRole("OWNER"), rateLimit({ name: "domain-verify", windowSec: 60, max: () => 20, key: (req) => req.user!.id }), h(security.verifyDomain));
+org.delete("/domains/:domainId", requireOrgRole("OWNER"), h(security.removeDomain));
+org.put("/sso", requireOrgRole("OWNER"), h(security.upsertSso));
+org.delete("/sso", requireOrgRole("OWNER"), h(security.deleteSso));
+org.get("/sso/test", requireOrgRole("OWNER"), h(security.testSso));
 
 org.get("/sla", h(sla.getSla));
 org.put("/sla", requireOrgRole(...ADMIN), h(sla.updateSla));

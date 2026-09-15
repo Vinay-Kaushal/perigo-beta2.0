@@ -16,6 +16,9 @@ export interface User {
   createdAt?: string;
   lastLoginAt?: string | null;
   emailVerifiedAt?: string | null;
+  mfaEnabledAt?: string | null;
+  /** How the current session was established (from /auth/me). */
+  session?: { methods: string[]; sso: boolean };
 }
 
 export interface Paginated<T> {
@@ -35,6 +38,9 @@ export interface Organisation {
   ticketPrefix: string;
   myRole: OrganisationRole;
   createdAt: string;
+  requireMfa?: boolean;
+  /** This session can't open the org until 2FA is on (organisation list). */
+  locked?: boolean;
   _count?: { members: number; boards: number; teams?: number; tickets: number };
 }
 
@@ -319,7 +325,7 @@ export interface ActivityItem {
 }
 
 export interface MyDashboard {
-  orgs: Array<{ id: string; name: string; slug: string; myRole: OrganisationRole; membersCount: number; openTickets: number; pendingApprovals: number }>;
+  orgs: Array<{ id: string; name: string; slug: string; myRole: OrganisationRole; membersCount: number; openTickets: number; pendingApprovals: number; locked: boolean }>;
   tickets: { assignedOpen: number; breached: number; dueSoon: number; requestedOpen: number };
   myTickets: Array<Pick<Ticket, "id" | "number" | "key" | "title" | "status" | "priority" | "dueAt" | "slaBreached" | "responseBreached" | "slaPaused" | "requester"> & { organisation: { id: string; name: string } }>;
   tasks: { open: number; overdue: number; dueThisWeek: number };
@@ -352,4 +358,23 @@ export interface SlaSettings {
   businessHours: SlaBusinessHours;
   holidays: Array<{ id: string; date: string; name: string }>;
   policies: SlaPolicy[];
+}
+
+export interface OrgSecurity {
+  requireMfa: boolean;
+  mfa: { members: number; withoutMfa: Array<{ id: string; name: string; email: string }> };
+  domains: Array<{ id: string; domain: string; verifiedAt: string | null; record: { type: "TXT"; name: string; value: string } }>;
+  sso: {
+    issuer: string;
+    clientId: string;
+    hasClientSecret: boolean;
+    enabled: boolean;
+    enforce: boolean;
+    autoProvision: boolean;
+    testedAt: string | null;
+    linkedAccounts: number;
+    updatedAt: string;
+  } | null;
+  callbackUrl: string;
+  domainVerification: "dns" | "skip";
 }

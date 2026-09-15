@@ -24,9 +24,9 @@ async function seed() {
   return { owner, member, outsider, org, board, privateBoard, ownerM, memberM };
 }
 
-async function ticketFor(user: { id: string; email: string; name: string }) {
+async function ticketFor(user: { id: string; email: string; name: string }, extra: Record<string, unknown> = {}) {
   const ticket = randomBytes(24).toString("base64url");
-  await redis.set(`ws:ticket:${ticket}`, JSON.stringify({ userId: user.id, email: user.email, name: user.name }), "EX", 30);
+  await redis.set(`ws:ticket:${ticket}`, JSON.stringify({ userId: user.id, email: user.email, name: user.name, ...extra }), "EX", 30);
   return ticket;
 }
 
@@ -39,8 +39,8 @@ async function upgradeStatus(ticket: string, origin = ORIGIN) {
 }
 
 /** Connects and buffers frames so tests can await specific messages. */
-async function connect(user: { id: string; email: string; name: string }) {
-  const ticket = await ticketFor(user);
+async function connect(user: { id: string; email: string; name: string }, ticketExtra: Record<string, unknown> = {}) {
+  const ticket = await ticketFor(user, ticketExtra);
   const ws = new WebSocket(`ws://127.0.0.1:${server.port}/?ticket=${ticket}`, { headers: { Origin: ORIGIN } } as never);
   const frames: Frame[] = [];
   const closed = new Promise<number>((resolve) => ws.addEventListener("close", (e) => resolve(e.code)));
@@ -179,6 +179,45 @@ describe("fan-out", () => {
     await publish(`org:${org.id}`, "TICKET_CREATED");
     expect(await m.none((f) => f.type === "event" && f.event.type === "TICKET_CREATED")).toBe(true);
     m.ws.close();
+  });
+});
+
+describe("organisation 2FA policy", () => {
+  test("members without 2FA can't subscribe; turning the policy on drops them; SSO sessions and 2FA pass", async () => {
+    const { owner, member, org, board } = await seed();
+    const m = await connect(member);
+    m.send({ type: "subscribe", channel: `org:${org.id}` });
+    m.send({ type: "subscribe", channel: `board:${board.id}` });
+    await m.next((f) => f.type === "subscribed");
+    await m.next((f) => f.type === "subscribed");
+
+    await prisma.organisation.update({ where: { id: org.id }, data: { requireMfa: true } });
+    await publish(`user:${member.id}`, "ACCESS_CHANGED", { organisationId: org.id });
+    const dropped = [await m.next((f) => f.type === "unsubscribed"), await m.next((f) => f.type === "unsubscribed")];
+    expect(dropped.map((d) => d.channel).sort()).toEqual([`board:${board.id}`, `org:${org.id}`].sort());
+
+    m.send({ type: "subscribe", channel: `org:${org.id}` });
+    expect((await m.next((f) => f.type === "subscribe_denied")).channel).toBe(`org:${org.id}`);
+
+    // A session from the org's own identity provider is exempt…
+    const conn = await prisma.ssoConnection.create({ data: { organisationId: org.id, issuer: "https://idp.example", clientId: "c", clientSecret: "x", enabled: true } });
+    const viaSso = await connect(member, { ssoConnectionId: conn.id });
+    viaSso.send({ type: "subscribe", channel: `board:${board.id}` });
+    await viaSso.next((f) => f.type === "subscribed");
+    // …but not a session from some other connection id.
+    const otherSso = await connect(member, { ssoConnectionId: randomUUID() });
+    otherSso.send({ type: "subscribe", channel: `org:${org.id}` });
+    await otherSso.next((f) => f.type === "subscribe_denied");
+
+    // Turning 2FA on takes effect without reconnecting.
+    await prisma.user.update({ where: { id: member.id }, data: { mfaEnabledAt: new Date() } });
+    m.send({ type: "subscribe", channel: `org:${org.id}` });
+    await m.next((f) => f.type === "subscribed");
+
+    const o = await connect(owner);
+    o.send({ type: "subscribe", channel: `org:${org.id}` });
+    expect((await o.next((f) => f.type === "subscribe_denied" || f.type === "subscribed")).type).toBe("subscribe_denied");
+    for (const c of [m, viaSso, otherSso, o]) c.ws.close();
   });
 });
 

@@ -119,6 +119,12 @@ model User {
   lastLoginAt     DateTime?
   emailVerifiedAt DateTime?
 
+  // Two-factor authentication (TOTP). The secret is encrypted at rest with DATA_ENCRYPTION_KEY.
+  mfaSecret    String?
+  mfaEnabledAt DateTime?
+  // Last accepted TOTP time-step, so a code can't be replayed inside its validity window.
+  mfaLastStep  Int?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -147,6 +153,8 @@ model User {
   authTokens       AuthToken[]
   ticketAttachments TicketAttachment[]
   notificationSettings NotificationSetting[]
+  mfaRecoveryCodes MfaRecoveryCode[]
+  ssoIdentities    SsoIdentity[]
 }
 
 model Organisation {
@@ -168,6 +176,9 @@ model Organisation {
   businessStart        String  @default("09:00")
   businessEnd          String  @default("17:00")
 
+  // Members need two-factor authentication on their account (or a single sign-on session) to access the org.
+  requireMfa Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -182,6 +193,8 @@ model Organisation {
   auditLogs   AuditLog[]
   slaPolicies SlaPolicy[]
   holidays    OrgHoliday[]
+  domains       OrgDomain[]
+  ssoConnection SsoConnection?
 }
 
 model OrganisationMember {
@@ -697,4 +710,75 @@ model OrgHoliday {
   organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
 
   @@unique([organisationId, date])
+}
+
+/** Single-use backup codes for two-factor authentication. Only a SHA-256 of each code is stored. */
+model MfaRecoveryCode {
+  id        String    @id @default(uuid())
+  userId    String
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/**
+ * An email domain an organisation claims. Once verified (DNS TXT record), the org's
+ * SSO connection is authoritative for accounts on that domain. A domain can be
+ * verified by only one organisation at a time.
+ */
+model OrgDomain {
+  id                String    @id @default(uuid())
+  organisationId    String
+  domain            String
+  verificationToken String
+  verifiedAt        DateTime?
+  createdAt         DateTime  @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, domain])
+  @@index([domain])
+}
+
+/** OpenID Connect single sign-on for an organisation (Okta, Microsoft Entra ID, Google Workspace, Auth0…). */
+model SsoConnection {
+  id             String   @id @default(uuid())
+  organisationId String   @unique
+  issuer         String
+  clientId       String
+  // Encrypted at rest with DATA_ENCRYPTION_KEY.
+  clientSecret   String
+  enabled        Boolean  @default(false)
+  // People on the org's verified domains must sign in through SSO (org owners are exempt, as a break-glass).
+  enforce        Boolean  @default(false)
+  // First SSO sign-in creates the account and joins the org as a member, without an invitation.
+  autoProvision  Boolean  @default(false)
+  // Last successful test sign-in against the current settings; required before enforcing.
+  testedAt       DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organisation Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  identities   SsoIdentity[]
+}
+
+/** Links an identity-provider subject to a perigo account. */
+model SsoIdentity {
+  id           String   @id @default(uuid())
+  connectionId String
+  userId       String
+  subject      String
+  email        String
+  lastLoginAt  DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  connection SsoConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, subject])
+  @@index([userId])
 }

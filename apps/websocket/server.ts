@@ -65,7 +65,7 @@ export async function createWsServer(opts: WsServerOptions) {
         if (client.channels.size >= maxChannelsPerSocket) {
           return rooms.send(client, { type: "subscribe_denied", channel, reason: "Too many subscriptions" });
         }
-        if (!(await canAccessChannel(client.user.userId, channel))) {
+        if (!(await canAccessChannel(client.user, channel))) {
           return rooms.send(client, { type: "subscribe_denied", channel, reason: "Not allowed" });
         }
         if (client.closed) return;
@@ -169,7 +169,7 @@ export async function createWsServer(opts: WsServerOptions) {
     for (const client of rooms.socketsForUser(userId)) {
       for (const channel of [...client.channels]) {
         if (channel.startsWith("user:")) continue;
-        if (!(await canAccessChannel(userId, channel))) {
+        if (!(await canAccessChannel(client.user, channel))) {
           rooms.leave(client, channel);
           rooms.send(client, { type: "unsubscribed", channel, reason: "Access revoked" });
         }

@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Building2, Plus, Users, LifeBuoy, Kanban } from "lucide-react";
+import { Building2, Plus, Users, LifeBuoy, Kanban, Lock } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { api, errorMessage } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
@@ -147,7 +147,13 @@ function OrgsInner() {
               <Card className="h-full p-4 transition-colors group-hover:border-border-strong">
                 <div className="flex items-start justify-between gap-2">
                   <span className="flex h-10 w-10 items-center justify-center rounded-md bg-accent-soft text-sm font-bold text-accent-ink">{o.name.charAt(0).toUpperCase()}</span>
-                  <Badge tone={o.myRole === "MEMBER" ? "neutral" : "accent"}>{titleCase(o.myRole)}</Badge>
+                  {o.locked ? (
+                    <Badge tone="warning" title="Turn on two-factor authentication to open this organisation">
+                      <Lock size={11} /> 2FA required
+                    </Badge>
+                  ) : (
+                    <Badge tone={o.myRole === "MEMBER" ? "neutral" : "accent"}>{titleCase(o.myRole)}</Badge>
+                  )}
                 </div>
                 <p className="mt-3 font-semibold text-ink">{o.name}</p>
                 <p className="line-clamp-2 min-h-[36px] text-[13px] text-ink-muted">{o.description || `/${o.slug}`}</p>

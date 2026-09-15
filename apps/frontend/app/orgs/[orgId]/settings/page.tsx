@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import useSWRInfinite from "swr/infinite";
 import { ScrollText, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
@@ -17,6 +17,8 @@ import { Avatar } from "@/components/ui/avatar";
 import { Dialog } from "@/components/ui/dialog";
 import { EmptyState, InlineAlert, Skeleton } from "@/components/ui/feedback";
 import { SlaSettingsCard } from "@/components/sla-settings";
+import { OrgSecuritySettings } from "@/components/org-security-settings";
+import { ssoTestFailureMessage } from "@/lib/sso";
 import { fullDate, relativeTime } from "@/lib/utils";
 
 function describe(log: AuditLog) {
@@ -47,6 +49,16 @@ function describe(log: AuditLog) {
     "sla.updated": `updated SLA settings (${Object.keys(m).map((k) => (k === "businessHours" ? "business hours" : k === "resetPolicies" ? "reset targets" : "targets")).join(", ")})`,
     "sla.holiday_added": `added holiday ${m.name} (${m.date})`,
     "sla.holiday_removed": "removed a holiday",
+    "security.mfa_required": "required two-factor authentication for all members",
+    "security.mfa_optional": "made two-factor authentication optional",
+    "domain.added": `claimed the domain ${m.domain}`,
+    "domain.verified": `verified the domain ${m.domain}`,
+    "domain.removed": `removed the domain ${m.domain}`,
+    "sso.created": "set up single sign-on",
+    "sso.updated": `updated single sign-on${m.enforce ? " (required)" : m.enabled ? "" : " (off)"}`,
+    "sso.deleted": "removed single sign-on",
+    "sso.tested": `tested single sign-on as ${m.email}`,
+    "sso.member_provisioned": `joined through single sign-on (${m.email})`,
   };
   return map[log.action] ?? log.action;
 }
@@ -60,6 +72,17 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [confirmSlug, setConfirmSlug] = useState("");
+
+  const searchParams = useSearchParams();
+  // Result of "Test connection", which comes back here from the identity provider.
+  useEffect(() => {
+    const result = searchParams.get("sso_test");
+    if (!result) return;
+    if (result === "ok") toast.success("Single sign-on works", { description: `Signed in at your identity provider as ${searchParams.get("email") ?? "a test user"}.` });
+    else toast.error("Single sign-on test failed", { description: ssoTestFailureMessage(searchParams.get("reason")) });
+    router.replace(`/orgs/${orgId}/settings#sso`);
+    mutate(`/organisations/${orgId}/security`);
+  }, [searchParams, router, orgId, mutate]);
 
   useEffect(() => {
     if (org) setForm({ name: org.name, description: org.description ?? "", ticketPrefix: org.ticketPrefix, currency: org.currency, requireJoinApproval: org.requireJoinApproval });
@@ -95,7 +118,7 @@ export default function SettingsPage() {
 
   return (
     <Page className="max-w-4xl">
-      <PageHeader eyebrow={org?.name} title="Settings" description="Organisation profile, access policy, service levels and audit trail." />
+      <PageHeader eyebrow={org?.name} title="Settings" description="Organisation profile, access and security policy, service levels and audit trail." />
       <div className="space-y-6">
         <Card>
           <CardHeader title="General" />
@@ -131,6 +154,8 @@ export default function SettingsPage() {
             </div>
           </form>
         </Card>
+
+        <OrgSecuritySettings orgId={orgId} isOwner={isOwner} />
 
         <SlaSettingsCard orgId={orgId} />
 

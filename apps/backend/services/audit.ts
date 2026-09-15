@@ -8,6 +8,8 @@ export interface AuditInput {
   targetType?: string;
   targetId?: string;
   metadata?: Record<string, unknown>;
+  /** Defaults to the signed-in user; set it for flows that establish the user (e.g. SSO sign-in). */
+  actorId?: string;
 }
 
 /**
@@ -20,7 +22,7 @@ export async function audit(req: Request, input: AuditInput) {
     await prisma.auditLog.create({
       data: {
         organisationId: input.organisationId,
-        actorId: req.user?.id ?? null,
+        actorId: input.actorId ?? req.user?.id ?? null,
         action: input.action,
         targetType: input.targetType ?? null,
         targetId: input.targetId ?? null,

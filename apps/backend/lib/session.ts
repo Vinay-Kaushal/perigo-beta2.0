@@ -6,7 +6,7 @@ export const SESSION_COOKIE = "perigo_session";
 /** Browsers must send this header on cookie-authenticated writes (see requireAuth). */
 export const CSRF_HEADER = "x-csrf-protection";
 
-function cookieOptions(): CookieOptions {
+export function cookieOptions(): CookieOptions {
   const { COOKIE_DOMAIN, COOKIE_SECURE, NODE_ENV } = env();
   return {
     httpOnly: true, // never readable from JavaScript — an XSS can't exfiltrate the session

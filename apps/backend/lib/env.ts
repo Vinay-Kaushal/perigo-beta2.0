@@ -44,6 +44,15 @@ const envSchema = z.object({
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10), // per IP+email / 15 min
   RATE_LIMIT_SIGNUP_MAX: z.coerce.number().int().positive().default(20), // per IP / hour
   RATE_LIMIT_TOKEN_MAX: z.coerce.number().int().positive().default(30), // invite/verification lookups per IP / minute
+  // 32-byte key (64 hex chars or base64) encrypting 2FA secrets and SSO client secrets at rest. Required in
+  // production; development and tests derive one from JWT_SECRET. Changing it makes stored secrets unreadable.
+  DATA_ENCRYPTION_KEY: z.string().optional(),
+  // Let SSO issuers resolve to private/loopback addresses (e.g. a self-hosted Keycloak on the internal network).
+  SSO_ALLOW_PRIVATE_NETWORK: z.enum(["true", "false"]).default("false"),
+  // Plain-http issuers — local development with a mock identity provider only.
+  SSO_ALLOW_HTTP_ISSUERS: z.enum(["true", "false"]).default("false"),
+  // "skip" marks claimed domains verified without a DNS check — local development and e2e only.
+  SSO_DOMAIN_VERIFICATION: z.enum(["dns", "skip"]).default("dns"),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -57,6 +66,29 @@ export function env(): Env {
     const issues = parsed.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`).join("\n");
     throw new Error(`Invalid environment configuration:\n${issues}`);
   }
-  cached = parsed.data;
+  const data = parsed.data;
+  const problems: string[] = [];
+  if (data.NODE_ENV === "production") {
+    if (!data.DATA_ENCRYPTION_KEY) problems.push("  DATA_ENCRYPTION_KEY: required in production (32 random bytes, hex or base64)");
+    if (data.SSO_ALLOW_HTTP_ISSUERS === "true") problems.push("  SSO_ALLOW_HTTP_ISSUERS: not allowed in production");
+    if (data.SSO_DOMAIN_VERIFICATION === "skip") problems.push("  SSO_DOMAIN_VERIFICATION: \"skip\" is not allowed in production");
+  }
+  if (data.DATA_ENCRYPTION_KEY && decodeKey(data.DATA_ENCRYPTION_KEY)?.length !== 32) {
+    problems.push("  DATA_ENCRYPTION_KEY: must decode to exactly 32 bytes (64 hex chars or base64)");
+  }
+  if (problems.length) throw new Error(`Invalid environment configuration:\n${problems.join("\n")}`);
+  cached = data;
   return cached;
+}
+
+/** Accepts 64 hex characters or base64/base64url. */
+export function decodeKey(value: string): Buffer | null {
+  if (/^[0-9a-f]{64}$/i.test(value)) return Buffer.from(value, "hex");
+  if (/^[A-Za-z0-9+/_-]+={0,2}$/.test(value)) return Buffer.from(value, "base64");
+  return null;
+}
+
+/** For tests that change environment variables after the first read. */
+export function resetEnvCache() {
+  cached = null;
 }

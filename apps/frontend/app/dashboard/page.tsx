@@ -166,10 +166,16 @@ export default function HomePage() {
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-[13px] font-medium text-ink">{o.name}</p>
                           <p className="text-xs text-ink-faint">
-                            {o.openTickets} open tickets · {o.membersCount} members
+                            {o.locked ? "Turn on two-factor authentication to open" : `${o.openTickets} open tickets · ${o.membersCount} members`}
                           </p>
                         </div>
-                        {o.pendingApprovals > 0 ? <Badge tone="warning">{o.pendingApprovals} to review</Badge> : <Badge>{titleCase(o.myRole)}</Badge>}
+                        {o.locked ? (
+                          <Badge tone="warning">2FA required</Badge>
+                        ) : o.pendingApprovals > 0 ? (
+                          <Badge tone="warning">{o.pendingApprovals} to review</Badge>
+                        ) : (
+                          <Badge>{titleCase(o.myRole)}</Badge>
+                        )}
                       </Link>
                     </li>
                   ))}
