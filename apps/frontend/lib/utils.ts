@@ -52,6 +52,19 @@ export function dueLabel(dueAt: string | null | undefined) {
   return diff < 0 ? { text: `${unit} overdue`, overdue: true } : { text: `due in ${unit}`, overdue: false };
 }
 
+/**
+ * A policy duration in words: "30 min", "4 hours", "1h 30m", "3 days". With
+ * business hours on, days are ambiguous (a "day" is a working day, not 24h),
+ * so durations stay in hours.
+ */
+export function durationLabel(minutes: number, { business = false } = {}) {
+  if (minutes < 60) return `${minutes} min`;
+  const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  if (!business && minutes % 1440 === 0) return plural(minutes / 1440, "day");
+  if (minutes % 60 === 0) return plural(minutes / 60, "hour");
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 export function titleCase(value: string) {
   return value
     .toLowerCase()

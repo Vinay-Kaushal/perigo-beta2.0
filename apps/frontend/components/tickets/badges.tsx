@@ -1,7 +1,7 @@
-import { AlertTriangle, ArrowDown, ArrowUp, ChevronsUp, Minus, Bug, HelpCircle, Layers, RefreshCcw, Wrench, Clock } from "lucide-react";
-import type { GoalHealth, Priority, TicketStatus, TicketType } from "@/lib/types";
+import { AlertTriangle, ArrowDown, ArrowUp, ChevronsUp, Minus, Bug, HelpCircle, Layers, RefreshCcw, Wrench, Clock, PauseCircle, CheckCircle2 } from "lucide-react";
+import type { GoalHealth, Priority, Ticket, TicketStatus, TicketType } from "@/lib/types";
 import { Badge, Dot, type BadgeTone } from "@/components/ui/badge";
-import { cn, dueLabel } from "@/lib/utils";
+import { cn, dueLabel, fullDate } from "@/lib/utils";
 
 export const STATUS_META: Record<TicketStatus, { label: string; tone: BadgeTone }> = {
   NEW: { label: "New", tone: "info" },
@@ -60,14 +60,46 @@ export function TypeLabel({ type }: { type: TicketType }) {
   );
 }
 
-export function SlaLabel({ dueAt, breached, done }: { dueAt: string | null; breached: boolean; done?: boolean }) {
+export function SlaLabel({ dueAt, breached, done, paused }: { dueAt: string | null; breached: boolean; done?: boolean; paused?: boolean }) {
   if (!dueAt || done) return <span className="text-[13px] text-ink-faint">—</span>;
+  if (paused) {
+    return (
+      <span className="inline-flex items-center gap-1 whitespace-nowrap text-[13px] text-ink-muted" title="On hold — the SLA clock is stopped">
+        <PauseCircle size={13} />
+        Paused
+      </span>
+    );
+  }
   const label = dueLabel(dueAt)!;
   return (
     <span className={cn("inline-flex items-center gap-1 whitespace-nowrap text-[13px]", breached ? "font-medium text-danger" : "text-ink-muted")}>
       {breached ? <AlertTriangle size={13} /> : <Clock size={13} />}
       {label.text}
     </span>
+  );
+}
+
+/** First-response target: met / late once answered, otherwise a countdown like the resolution SLA. */
+export function ResponseSla({ ticket, done }: { ticket: Pick<Ticket, "responseDueAt" | "firstResponseAt" | "responseBreached" | "slaPaused">; done?: boolean }) {
+  const { responseDueAt, firstResponseAt } = ticket;
+  if (!responseDueAt) return <span className="text-[13px] text-ink-faint">—</span>;
+  if (firstResponseAt) {
+    const late = new Date(firstResponseAt) > new Date(responseDueAt);
+    return (
+      <div>
+        <span className={cn("inline-flex items-center gap-1 whitespace-nowrap text-[13px]", late ? "font-medium text-danger" : "text-success")}>
+          {late ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} />}
+          {late ? "Responded late" : "Responded on time"}
+        </span>
+        <p className="text-2xs text-ink-faint">Target {fullDate(responseDueAt)}</p>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <SlaLabel dueAt={responseDueAt} breached={ticket.responseBreached} paused={ticket.slaPaused} done={done} />
+      {!done && <p className="text-2xs text-ink-faint">{fullDate(responseDueAt)}</p>}
+    </div>
   );
 }
 

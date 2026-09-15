@@ -84,7 +84,7 @@ export default function HomePage() {
                           </p>
                         </div>
                         <div className="hidden sm:block">
-                          <SlaLabel dueAt={t.dueAt} breached={t.slaBreached} />
+                          <SlaLabel dueAt={t.dueAt} breached={t.slaBreached} paused={t.slaPaused} />
                         </div>
                         <StatusBadge status={t.status} />
                       </Link>

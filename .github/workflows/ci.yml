@@ -91,7 +91,7 @@ jobs:
         run: bun test
       - name: Frontend unit tests
         working-directory: apps/frontend
-        run: bun test lib
+        run: bun run test
 
       - name: Build frontend
         working-directory: apps/frontend

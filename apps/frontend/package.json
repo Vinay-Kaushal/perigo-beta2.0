@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "check-types": "tsc --noEmit",
-    "test": "bun test lib",
+    "test": "bun test lib components",
     "test:e2e": "playwright test"
   },
   "dependencies": {

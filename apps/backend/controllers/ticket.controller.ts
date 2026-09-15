@@ -12,6 +12,8 @@ import { notify } from "../services/notifications";
 import { extractMentionIds, newMentionIds, stripMentionTokens } from "../lib/mentions";
 import { deleteObjects } from "../lib/storage";
 import { attachmentInclude, serialiseAttachment } from "./attachment.controller";
+import { loadSlaContext } from "../services/sla";
+import { initialTargets, resume, retarget } from "../domain/sla";
 import {
   DONE_STATUSES,
   OPEN_STATUSES,
@@ -19,8 +21,9 @@ import {
   canAssignTicket,
   canEditTicket,
   checkStatusChange,
+  SLA_RUNNING_STATUSES,
+  isResponseBreached,
   isSlaBreached,
-  slaDueAt,
   ticketKey,
 } from "../domain/tickets";
 
@@ -53,7 +56,13 @@ export async function orgPrefix(orgId: string) {
 }
 
 function serialise<T extends Ticket>(ticket: T, prefix: string) {
-  return { ...ticket, key: ticketKey(prefix, ticket.number), slaBreached: isSlaBreached(ticket) };
+  return {
+    ...ticket,
+    key: ticketKey(prefix, ticket.number),
+    slaBreached: isSlaBreached(ticket),
+    responseBreached: isResponseBreached(ticket),
+    slaPaused: !!ticket.slaPausedAt,
+  };
 }
 
 export const ticketLink = (t: Pick<Ticket, "organisationId" | "number">) => `/orgs/${t.organisationId}/tickets/${t.number}`;
@@ -161,6 +170,7 @@ export async function createTicket(req: Request, res: Response) {
   const team = body.teamId ? await assertOrgTeam(orgId, body.teamId) : null;
 
   const now = new Date();
+  const targets = initialTargets(await loadSlaContext(orgId), body.priority, now);
   const ticket = await prisma.$transaction(async (tx) => {
     // Atomic per-org sequence: the row lock on Organisation serialises concurrent creates.
     const org = await tx.organisation.update({
@@ -173,6 +183,7 @@ export async function createTicket(req: Request, res: Response) {
       data: {
         organisationId: orgId,
         number: org.ticketCounter,
+        createdAt: now,
         title: body.title,
         description: body.description,
         type: body.type,
@@ -183,7 +194,8 @@ export async function createTicket(req: Request, res: Response) {
         createdById: user.id,
         assigneeId: assignee?.userId ?? null,
         teamId: team?.id ?? null,
-        dueAt: body.dueAt ?? slaDueAt(body.priority, now),
+        dueAt: body.dueAt ?? targets.dueAt,
+        responseDueAt: targets.responseDueAt,
       },
       include: listInclude,
     });
@@ -267,6 +279,7 @@ const listQuerySchema = z.object({
   requester: z.union([z.literal("me"), z.string().uuid()]).optional(),
   team: z.union([z.literal("mine"), z.string().uuid()]).optional(),
   breached: z.enum(["true", "false"]).optional(),
+  responseBreached: z.enum(["true", "false"]).optional(),
   q: z.string().trim().max(200).optional(),
   sort: z.enum(["createdAt", "updatedAt", "priority", "dueAt", "number"]).default("updatedAt"),
   order: z.enum(["asc", "desc"]).default("desc"),
@@ -303,7 +316,11 @@ export async function listTickets(req: Request, res: Response) {
   } else if (q.team) {
     and.push({ teamId: q.team });
   }
-  if (q.breached === "true") and.push({ status: { in: OPEN_STATUSES }, dueAt: { lt: new Date() } });
+  if (q.breached === "true") and.push({ status: { in: SLA_RUNNING_STATUSES }, slaPausedAt: null, dueAt: { lt: new Date() } });
+  // Still waiting for a first response past its target (matches the stats count).
+  if (q.responseBreached === "true") {
+    and.push({ status: { in: SLA_RUNNING_STATUSES }, slaPausedAt: null, firstResponseAt: null, responseDueAt: { lt: new Date() } });
+  }
   if (q.q) {
     const numberMatch = q.q.match(/^(?:[A-Za-z]{2,6}-)?(\d{1,9})$/);
     and.push({
@@ -403,7 +420,9 @@ export async function updateTicket(req: Request, res: Response) {
   if (body.priority && body.priority !== ticket.priority) {
     events.push({ ticketId: ticket.id, actorId: user.id, type: "PRIORITY_CHANGED", metadata: { from: ticket.priority, to: body.priority } });
     // Re-derive the SLA target from the new priority unless a due date was set explicitly in this edit.
-    if (body.dueAt === undefined) data.dueAt = slaDueAt(body.priority, ticket.createdAt);
+    const next = retarget(await loadSlaContext(ticket.organisationId), ticket, body.priority);
+    if (body.dueAt === undefined) data.dueAt = next.dueAt;
+    if (next.responseDueAt) data.responseDueAt = next.responseDueAt;
   }
   if (body.teamId !== undefined && body.teamId !== ticket.teamId) {
     const previous = ticket.teamId ? await prisma.team.findUnique({ where: { id: ticket.teamId }, select: { id: true, name: true } }) : null;
@@ -555,6 +574,16 @@ export async function changeTicketStatus(req: Request, res: Response) {
     Object.assign(data, { resolvedAt: null, closedAt: null });
   }
 
+  // SLA pause: the clock stops while on hold and resumes with the targets pushed out by the paused business time.
+  let pausedMinutes: number | undefined;
+  if (status === "ON_HOLD" && !ticket.slaPausedAt) {
+    data.slaPausedAt = now;
+  } else if (ticket.slaPausedAt && status !== "ON_HOLD") {
+    const { pausedMinutes: minutes, ...resumed } = resume(await loadSlaContext(ticket.organisationId), ticket, now);
+    Object.assign(data, resumed);
+    pausedMinutes = minutes;
+  }
+
   const updated = await prisma.$transaction(async (tx) => {
     const t = await tx.ticket.update({ where: { id: ticket.id }, data, include: listInclude });
     await tx.ticketEvent.create({
@@ -562,7 +591,12 @@ export async function changeTicketStatus(req: Request, res: Response) {
         ticketId: ticket.id,
         actorId: user.id,
         type: "STATUS_CHANGED",
-        metadata: { from: ticket.status, to: status, ...(resolutionNote ? { note: resolutionNote } : {}) },
+        metadata: {
+          from: ticket.status,
+          to: status,
+          ...(resolutionNote ? { note: resolutionNote } : {}),
+          ...(pausedMinutes !== undefined ? { slaPausedMinutes: pausedMinutes } : {}),
+        },
       },
     });
     return t;
@@ -743,14 +777,15 @@ export async function ticketStats(req: Request, res: Response) {
   since14.setUTCHours(0, 0, 0, 0);
   const since30 = new Date(now.getTime() - 30 * DAY);
   const open = { organisationId: orgId, status: { in: OPEN_STATUSES } };
+  const running = { organisationId: orgId, status: { in: SLA_RUNNING_STATUSES }, slaPausedAt: null };
 
-  const [byStatus, byPriority, byType, unassigned, breached, mine, created14, resolved14, resolved30, byAssignee] =
+  const [byStatus, byPriority, byType, unassigned, breached, mine, created14, resolved14, resolved30, byAssignee, responseBreached, paused] =
     await Promise.all([
       prisma.ticket.groupBy({ by: ["status"], where: { organisationId: orgId }, _count: { _all: true } }),
       prisma.ticket.groupBy({ by: ["priority"], where: open, _count: { _all: true } }),
       prisma.ticket.groupBy({ by: ["type"], where: open, _count: { _all: true } }),
       prisma.ticket.count({ where: { ...open, assigneeId: null } }),
-      prisma.ticket.count({ where: { ...open, dueAt: { lt: now } } }),
+      prisma.ticket.count({ where: { ...running, dueAt: { lt: now } } }),
       prisma.ticket.count({ where: { ...open, assigneeId: user.id } }),
       prisma.ticket.findMany({ where: { organisationId: orgId, createdAt: { gte: since14 } }, select: { createdAt: true } }),
       prisma.ticket.findMany({ where: { organisationId: orgId, resolvedAt: { gte: since14 } }, select: { resolvedAt: true } }),
@@ -760,6 +795,8 @@ export async function ticketStats(req: Request, res: Response) {
         take: 5000,
       }),
       prisma.ticket.groupBy({ by: ["assigneeId"], where: { ...open, assigneeId: { not: null } }, _count: { _all: true } }),
+      prisma.ticket.count({ where: { ...running, firstResponseAt: null, responseDueAt: { lt: now } } }),
+      prisma.ticket.count({ where: { organisationId: orgId, slaPausedAt: { not: null } } }),
     ]);
 
   const trend = Array.from({ length: 14 }, (_, i) => {
@@ -794,6 +831,8 @@ export async function ticketStats(req: Request, res: Response) {
     open: OPEN_STATUSES.reduce((n, s) => n + statusCounts[s], 0),
     unassigned,
     breached,
+    responseBreached,
+    paused,
     assignedToMe: mine,
     byStatus: statusCounts,
     byPriority: Object.fromEntries(PRIORITIES.map((p) => [p, byPriority.find((g) => g.priority === p)?._count._all ?? 0])),

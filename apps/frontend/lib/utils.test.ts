@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { dueLabel, initials, money, titleCase } from "./utils";
+import { dueLabel, durationLabel, initials, money, titleCase } from "./utils";
 
 afterEach(() => setSystemTime());
 
@@ -32,5 +32,21 @@ describe("formatting", () => {
     expect(initials("Ada Lovelace")).toBe("AL");
     expect(initials("  cher ")).toBe("C");
     expect(initials("")).toBe("?");
+  });
+});
+
+describe("durationLabel", () => {
+  test("minutes, hours, mixed and days", () => {
+    expect(durationLabel(30)).toBe("30 min");
+    expect(durationLabel(60)).toBe("1 hour");
+    expect(durationLabel(240)).toBe("4 hours");
+    expect(durationLabel(90)).toBe("1h 30m");
+    expect(durationLabel(1440)).toBe("1 day");
+    expect(durationLabel(4320)).toBe("3 days");
+  });
+
+  test("business time never rounds to days", () => {
+    expect(durationLabel(4320, { business: true })).toBe("72 hours");
+    expect(durationLabel(1440, { business: true })).toBe("24 hours");
   });
 });

@@ -161,6 +161,13 @@ model Organisation {
   ticketPrefix        String  @default("TKT")
   ticketCounter       Int     @default(0)
 
+  // SLA clocks count only working time when business hours are enabled.
+  timezone             String  @default("UTC")
+  businessHoursEnabled Boolean @default(false)
+  businessDays         Int[]   @default([1, 2, 3, 4, 5]) // 0 = Sunday … 6 = Saturday
+  businessStart        String  @default("09:00")
+  businessEnd          String  @default("17:00")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -173,6 +180,8 @@ model Organisation {
   tickets     Ticket[]
   notifications Notification[]
   auditLogs   AuditLog[]
+  slaPolicies SlaPolicy[]
+  holidays    OrgHoliday[]
 }
 
 model OrganisationMember {
@@ -490,7 +499,11 @@ model Ticket {
   teamId      String?
 
   dueAt           DateTime? // SLA resolution target
+  responseDueAt   DateTime? // SLA first-response target
   firstResponseAt DateTime?
+  // While ON_HOLD the SLA clock is paused; resuming pushes the targets out by the business time spent paused.
+  slaPausedAt      DateTime?
+  slaPausedMinutes Int       @default(0)
   resolvedAt      DateTime?
   closedAt        DateTime?
   resolutionNote  String?
@@ -655,4 +668,33 @@ model NotificationSetting {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, category])
+}
+
+/** Per-priority SLA targets for an organisation, in business minutes. Missing rows use the defaults in domain/sla.ts. */
+model SlaPolicy {
+  id                   String       @id @default(uuid())
+  organisationId       String
+  priority             TaskPriority
+  firstResponseMinutes Int
+  resolutionMinutes    Int
+
+  updatedAt DateTime @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, priority])
+}
+
+/** A non-working day for SLA calculations (local date in the org's timezone). */
+model OrgHoliday {
+  id             String @id @default(uuid())
+  organisationId String
+  date           String // YYYY-MM-DD
+  name           String
+
+  createdAt DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, date])
 }

@@ -21,7 +21,8 @@ packages/db     Prisma schema, migrations, generated client (PostgreSQL)
 
 | Module | What it does |
 |---|---|
-| Service desk | Per-org numbered tickets (`ACME-42`); types: incident, request, problem, change, question. SLA due dates come from priority (urgent 4h → low 5d), with breach tracking. Tickets move through a status workflow (new → open → in progress / on hold → resolved → closed, or cancelled) and can be assigned to a person and a team queue. They also have watchers, comments, and a full activity timeline. |
+| Service desk | Per-org numbered tickets (`ACME-42`); types: incident, request, problem, change, question. Every ticket gets a first-response and a resolution target from its priority, with breach tracking. Tickets move through a status workflow (new → open → in progress / on hold → resolved → closed, or cancelled) and can be assigned to a person and a team queue. They also have watchers, comments, and a full activity timeline. |
+| SLAs & business hours | Per-org targets for each priority (defaults: urgent 30 min / 4 h → low 1 day / 5 days), editable by owners and admins. SLAs can count only business hours: working days, opening hours, a timezone (DST-safe) and holidays. Putting a ticket **on hold pauses the clock**; resuming moves both targets out by the business time spent on hold, which is recorded in the activity log. The queue has *SLA breached*, *Response overdue* and *On hold* views. The first reply from anyone other than the requester counts as the response. New settings apply to tickets raised, re-prioritised or resumed afterwards. |
 | Assignment rules | Anyone can pick up or route an unassigned ticket. Once assigned, only the requester, the assignee, or an admin can reassign it. The new assignee, the previous assignee, the requester and watchers each get a specific notification ("Marcus assigned ACME-42 to you", "…reassigned to Sam"). |
 | Onboarding | You can only join by invitation. Invite → the invitee accepts via the emailed link (it must match their account's email) → an owner or admin approves. The approval step can be turned off per org, but invites sent by regular members always need approval. |
 | Expenses | Members submit expenses; owners and admins approve or reject them (a reason is required to reject). Admins can't approve their own expenses. Includes monthly and category breakdowns. |
@@ -88,7 +89,7 @@ docker run -d --name xsam-test-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=p
 docker run -d --name xsam-test-redis -p 6381:6379 redis:7-alpine
 cd apps/backend && bun run test:db:prepare    # apply migrations to the test DB
 
-bun run test          # from the repo root: backend (194) + websocket (9) + frontend unit (27)
+bun run test          # from the repo root: backend (234) + websocket (9) + frontend unit (32)
 ```
 
 Override the database and Redis with `TEST_DATABASE_URL` and `TEST_REDIS_URL`.
@@ -101,10 +102,10 @@ cd apps/frontend && bunx playwright install chromium
 E2E_BASE_URL=http://localhost:3000 bun run test:e2e
 ```
 
-The e2e suite covers: login redirects and open-redirect protection, httpOnly session, sign-out, forgot password; two browsers checking that ticket assignment, status changes and comments arrive live; invite → register → accept → admin approval → access; board column management and presence. Every e2e test also fails on page errors, console errors or unexpected 4xx/5xx responses.
+The e2e suite covers: login redirects and open-redirect protection, httpOnly session, sign-out, forgot password; two browsers checking that ticket assignment, status changes and comments arrive live; invite → register → accept → admin approval → access; board column management and presence; SLA settings, business hours and holidays, and a ticket's SLA pausing on hold. Every e2e test also fails on page errors, console errors or unexpected 4xx/5xx responses.
 
-- **Frontend unit.** The API client (cookie + CSRF header, 401 handling, open-redirect guard) and formatting helpers.
-- **Backend.** Unit tests cover the ticket workflow and permissions, SLA calculation, goal health and integer positioning. Integration tests cover auth, sessions and hardening; organisations, roles and IDOR protection; the full invitation flow; tickets (including concurrency, notifications and realtime publishes); boards and tasks; expenses and goals; dashboards and analytics. Every API response in every test is also checked for leaked `passwordHash`, `tokenVersion` or `tokenHash`.
+- **Frontend unit.** The API client (cookie + CSRF header, 401 handling, open-redirect guard), formatting helpers and the timezone picker's names.
+- **Backend.** Unit tests cover the ticket workflow and permissions, business-time arithmetic (weekends, holidays, timezones, DST) and SLA pause/resume, goal health and integer positioning. Integration tests cover auth, sessions and hardening; organisations, roles and IDOR protection; the full invitation flow; tickets (including concurrency, notifications and realtime publishes); SLA settings, business-hours targets and pause/resume; boards and tasks; expenses and goals; dashboards and analytics. Every API response in every test is also checked for leaked `passwordHash`, `tokenVersion` or `tokenHash`.
 - **Websocket.** Ticket auth, origin checks, channel authorisation, fan-out isolation, live access revocation, presence, and flood/oversize handling.
 
 ## Security model
@@ -120,8 +121,8 @@ The e2e suite covers: login redirects and open-redirect protection, httpOnly ses
 - **Rate limits.** Redis-backed, so they hold across instances. Anonymous traffic is limited per IP; signed-in traffic per user, so a whole office behind one NAT or VPN address doesn't share a budget; invalid or revoked credentials are counted per IP so garbage tokens can't be used to flood. Login, signup, token lookups and verification emails have their own limits.
 - **HTTP.** Helmet with a strict CSP, a CORS allowlist, `Cache-Control: no-store`, request ids, a 256KB body cap, env validation at boot, no stack traces in responses, and graceful shutdown.
 - **Frontend.** CSP and security headers, no tokens in JavaScript, open-redirect-safe `?next=`, HTML-escaped email templates, http(s)-only avatar URLs.
-- **Audit log.** Role changes, membership, invitations and approvals, expense decisions and deletions, each with actor and IP.
+- **Audit log.** Role changes, membership, invitations and approvals, expense decisions, SLA and holiday changes, and deletions, each with actor and IP.
 
 ## Database migrations
 
-`20260914090000_auth_tokens` marks existing users as verified so nobody is locked out. `20260913100000_service_desk_mvp` preserves existing data: goal targets are renamed rather than dropped, existing invitation tokens are hashed so old links keep working, and pre-existing expenses are marked approved. Always run `prisma migrate deploy` before starting a new build.
+`20260915090000_sla_business_hours` adds SLA policies, holidays and business hours (off by default, so existing orgs keep 24/7 SLAs) and starts the paused clock for tickets already on hold. `20260914090000_auth_tokens` marks existing users as verified so nobody is locked out. `20260913100000_service_desk_mvp` preserves existing data: goal targets are renamed rather than dropped, existing invitation tokens are hashed so old links keep working, and pre-existing expenses are marked approved. Always run `prisma migrate deploy` before starting a new build.

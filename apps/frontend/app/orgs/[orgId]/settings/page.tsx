@@ -16,6 +16,7 @@ import { Field, Input, Textarea } from "@/components/ui/input";
 import { Avatar } from "@/components/ui/avatar";
 import { Dialog } from "@/components/ui/dialog";
 import { EmptyState, InlineAlert, Skeleton } from "@/components/ui/feedback";
+import { SlaSettingsCard } from "@/components/sla-settings";
 import { fullDate, relativeTime } from "@/lib/utils";
 
 function describe(log: AuditLog) {
@@ -43,6 +44,9 @@ function describe(log: AuditLog) {
     "expense.rejected": `rejected expense "${m.title}"`,
     "expense.deleted": `deleted approved expense "${m.title}"`,
     "goal.deleted": `deleted goal "${m.title}"`,
+    "sla.updated": `updated SLA settings (${Object.keys(m).map((k) => (k === "businessHours" ? "business hours" : k === "resetPolicies" ? "reset targets" : "targets")).join(", ")})`,
+    "sla.holiday_added": `added holiday ${m.name} (${m.date})`,
+    "sla.holiday_removed": "removed a holiday",
   };
   return map[log.action] ?? log.action;
 }
@@ -91,7 +95,7 @@ export default function SettingsPage() {
 
   return (
     <Page className="max-w-4xl">
-      <PageHeader eyebrow={org?.name} title="Settings" description="Organisation profile, access policy and audit trail." />
+      <PageHeader eyebrow={org?.name} title="Settings" description="Organisation profile, access policy, service levels and audit trail." />
       <div className="space-y-6">
         <Card>
           <CardHeader title="General" />
@@ -127,6 +131,8 @@ export default function SettingsPage() {
             </div>
           </form>
         </Card>
+
+        <SlaSettingsCard orgId={orgId} />
 
         <Card>
           <CardHeader title="Audit log" description="Security-relevant changes: roles, membership, approvals and deletions." />

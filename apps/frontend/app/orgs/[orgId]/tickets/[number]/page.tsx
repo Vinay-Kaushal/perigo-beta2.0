@@ -23,8 +23,8 @@ import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
 import { DropdownContent, DropdownItem, DropdownMenu, DropdownTrigger } from "@/components/ui/dropdown";
 import { ErrorState, Skeleton } from "@/components/ui/feedback";
-import { PRIORITY_META, PriorityLabel, SlaLabel, STATUS_META, StatusBadge, TYPE_META, TypeLabel } from "@/components/tickets/badges";
-import { cn, fullDate, relativeTime, titleCase } from "@/lib/utils";
+import { PRIORITY_META, PriorityLabel, ResponseSla, SlaLabel, STATUS_META, StatusBadge, TYPE_META, TypeLabel } from "@/components/tickets/badges";
+import { cn, durationLabel, fullDate, relativeTime, titleCase } from "@/lib/utils";
 
 type TimelineItem = { kind: "comment"; at: string; comment: TicketComment } | { kind: "event"; at: string; event: TicketEvent };
 
@@ -47,6 +47,7 @@ function eventText(e: TicketEvent) {
         <>
           changed status from <strong className="font-medium text-ink">{STATUS_META[m.from as TicketStatus]?.label}</strong> to{" "}
           <strong className="font-medium text-ink">{STATUS_META[m.to as TicketStatus]?.label}</strong>
+          {typeof m.slaPausedMinutes === "number" && m.slaPausedMinutes > 0 ? <> · SLA extended by {durationLabel(m.slaPausedMinutes, { business: true })}</> : null}
         </>
       );
     case "PRIORITY_CHANGED":
@@ -255,6 +256,7 @@ export default function TicketDetailPage() {
               <span className="font-mono font-medium text-ink-muted">{t.key}</span>
               <StatusBadge status={t.status} />
               {t.slaBreached && <span className="font-medium text-danger">SLA breached</span>}
+              {t.slaPaused && !isDone && <span className="font-medium text-ink-muted">SLA paused while on hold</span>}
             </div>
             {editing ? (
               <form
@@ -536,9 +538,12 @@ export default function TicketDetailPage() {
                   t.team?.name ?? <span className="text-ink-faint">—</span>
                 )}
               </DetailRow>
-              <DetailRow label="SLA">
+              <DetailRow label="Response SLA">
+                <ResponseSla ticket={t} done={isDone} />
+              </DetailRow>
+              <DetailRow label="Resolution SLA">
                 <div>
-                  <SlaLabel dueAt={t.dueAt} breached={t.slaBreached} done={isDone} />
+                  <SlaLabel dueAt={t.dueAt} breached={t.slaBreached} paused={t.slaPaused} done={isDone} />
                   {t.dueAt && <p className="text-2xs text-ink-faint">{fullDate(t.dueAt)}</p>}
                 </div>
               </DetailRow>

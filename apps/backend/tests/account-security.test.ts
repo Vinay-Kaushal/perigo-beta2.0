@@ -34,6 +34,10 @@ describe("browser sessions (httpOnly cookie)", () => {
     expect(forged.status).toBe(403);
     expect(forged.body.code).toBe("CSRF");
 
+    const forgedPut = await request("PUT", `/organisations/${uid()}/sla`, { headers: { Cookie: cookie.pair }, body: { resetPolicies: ["LOW"] } });
+    expect(forgedPut.status).toBe(403);
+    expect(forgedPut.body.code).toBe("CSRF");
+
     const wrongValue = await request("PATCH", "/auth/me", { headers: { Cookie: cookie.pair, "X-CSRF-Protection": "yes" }, body: { name: "x" } });
     expect(wrongValue.status).toBe(403);
 
@@ -55,6 +59,7 @@ describe("browser sessions (httpOnly cookie)", () => {
     });
     expect(preflight.headers.get("access-control-allow-credentials")).toBe("true");
     expect(preflight.headers.get("access-control-allow-headers")?.toLowerCase()).toContain("x-csrf-protection");
+    expect(preflight.headers.get("access-control-allow-methods")).toContain("PUT");
 
     const evil = await request("OPTIONS", "/organisations", { headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "POST" } });
     expect(evil.headers.get("access-control-allow-origin")).toBeNull();

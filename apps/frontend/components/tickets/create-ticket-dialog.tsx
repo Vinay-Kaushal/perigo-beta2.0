@@ -5,27 +5,32 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { api, errorMessage } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
-import type { Member, Priority, Team, Ticket, TicketType } from "@/lib/types";
+import type { Member, Priority, SlaSettings, Team, Ticket, TicketType } from "@/lib/types";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { InlineAlert } from "@/components/ui/feedback";
 import { PRIORITY_META, TYPE_META } from "./badges";
 import { useAuth } from "@/lib/auth-context";
+import { durationLabel } from "@/lib/utils";
 import { MentionTextarea, type MentionTextareaHandle } from "@/components/mention-textarea";
-
-const SLA_COPY: Record<Priority, string> = { URGENT: "4 hours", HIGH: "1 day", MEDIUM: "3 days", LOW: "5 days" };
 
 export function CreateTicketDialog({ orgId, open, onOpenChange }: { orgId: string; open: boolean; onOpenChange: (o: boolean) => void }) {
   const router = useRouter();
   const { user } = useAuth();
   const { data: members } = useApi<Member[]>(open ? `/organisations/${orgId}/members` : null);
   const { data: teams } = useApi<Team[]>(open ? `/organisations/${orgId}/teams` : null);
+  const { data: sla } = useApi<SlaSettings>(open ? `/organisations/${orgId}/sla` : null);
   const [form, setForm] = useState({ title: "", description: "", type: "INCIDENT" as TicketType, priority: "MEDIUM" as Priority, category: "", assigneeId: "", teamId: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const description = useRef<MentionTextareaHandle>(null);
   const candidates = useMemo(() => (members ?? []).map((m) => ({ id: m.userId, name: m.user.name, email: m.user.email, avatarUrl: m.user.avatarUrl })), [members]);
+  const policy = sla?.policies.find((p) => p.priority === form.priority);
+  const business = !!sla?.businessHours.enabled;
+  const slaHint = policy
+    ? `Response within ${durationLabel(policy.firstResponseMinutes, { business })}, resolution within ${durationLabel(policy.resolutionMinutes, { business })}${business ? " of business time" : ""}`
+    : undefined;
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   async function submit(e: React.FormEvent) {
@@ -96,7 +101,7 @@ export function CreateTicketDialog({ orgId, open, onOpenChange }: { orgId: strin
             ))}
           </Select>
         </Field>
-        <Field label="Priority" htmlFor="t-priority" hint={`Resolution SLA: ${SLA_COPY[form.priority]}`}>
+        <Field label="Priority" htmlFor="t-priority" hint={slaHint}>
           <Select id="t-priority" value={form.priority} onChange={(e) => set("priority", e.target.value as Priority)}>
             {(Object.keys(PRIORITY_META) as Priority[]).map((p) => (
               <option key={p} value={p}>

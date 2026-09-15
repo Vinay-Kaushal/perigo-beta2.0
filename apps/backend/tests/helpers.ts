@@ -87,6 +87,7 @@ export function client(token?: string) {
     get: <T = any>(path: string) => request<T>("GET", path, { token }),
     post: <T = any>(path: string, body?: unknown) => request<T>("POST", path, { token, body: body ?? {} }),
     patch: <T = any>(path: string, body?: unknown) => request<T>("PATCH", path, { token, body: body ?? {} }),
+    put: <T = any>(path: string, body?: unknown) => request<T>("PUT", path, { token, body: body ?? {} }),
     delete: <T = any>(path: string, body?: unknown) => request<T>("DELETE", path, { token, body }),
   };
 }

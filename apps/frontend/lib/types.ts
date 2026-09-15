@@ -101,11 +101,16 @@ export interface Ticket {
   assignee: User | null;
   team: { id: string; name: string } | null;
   dueAt: string | null;
+  responseDueAt: string | null;
   firstResponseAt: string | null;
   resolvedAt: string | null;
   closedAt: string | null;
   resolutionNote: string | null;
   slaBreached: boolean;
+  /** The first response came (or is still due) after its target. */
+  responseBreached: boolean;
+  /** On hold: the SLA clock is stopped. */
+  slaPaused: boolean;
   createdAt: string;
   updatedAt: string;
   _count?: { comments: number };
@@ -155,6 +160,9 @@ export interface TicketStats {
   open: number;
   unassigned: number;
   breached: number;
+  /** Running tickets past their first-response target with no response yet. */
+  responseBreached: number;
+  paused: number;
   assignedToMe: number;
   byStatus: Record<TicketStatus, number>;
   byPriority: Record<Priority, number>;
@@ -313,7 +321,7 @@ export interface ActivityItem {
 export interface MyDashboard {
   orgs: Array<{ id: string; name: string; slug: string; myRole: OrganisationRole; membersCount: number; openTickets: number; pendingApprovals: number }>;
   tickets: { assignedOpen: number; breached: number; dueSoon: number; requestedOpen: number };
-  myTickets: Array<Pick<Ticket, "id" | "number" | "key" | "title" | "status" | "priority" | "dueAt" | "slaBreached" | "requester"> & { organisation: { id: string; name: string } }>;
+  myTickets: Array<Pick<Ticket, "id" | "number" | "key" | "title" | "status" | "priority" | "dueAt" | "slaBreached" | "responseBreached" | "slaPaused" | "requester"> & { organisation: { id: string; name: string } }>;
   tasks: { open: number; overdue: number; dueThisWeek: number };
   upcomingTasks: Array<{ id: string; title: string; dueDate: string; priority: Priority; overdue: boolean; board: { id: string; name: string }; organisation: { id: string; name: string } }>;
   approvals: { joinRequests: number; expenses: number };
@@ -321,4 +329,27 @@ export interface MyDashboard {
   unreadNotifications: number;
   goals: Goal[];
   pendingJoinRequests: Array<{ id: string; organisation: { id: string; name: string }; acceptedAt: string }>;
+}
+
+export interface SlaBusinessHours {
+  enabled: boolean;
+  timezone: string;
+  /** 0 = Sunday … 6 = Saturday */
+  days: number[];
+  start: string;
+  end: string;
+}
+
+export interface SlaPolicy {
+  priority: Priority;
+  firstResponseMinutes: number;
+  resolutionMinutes: number;
+  isDefault: boolean;
+  defaults: { firstResponseMinutes: number; resolutionMinutes: number };
+}
+
+export interface SlaSettings {
+  businessHours: SlaBusinessHours;
+  holidays: Array<{ id: string; date: string; name: string }>;
+  policies: SlaPolicy[];
 }

@@ -11,7 +11,8 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { prisma } from "../lib/prisma";
-import { slaDueAt } from "../domain/tickets";
+import { initialTargets, resolvePolicies } from "../domain/sla";
+import { ALWAYS_OPEN } from "../domain/businessHours";
 import { sha256, randomToken } from "../lib/tokens";
 
 if (process.env.NODE_ENV === "production") throw new Error("Refusing to seed a production database");
@@ -86,8 +87,10 @@ async function main() {
         assigneeId: spec.assignee?.id ?? null,
         teamId: spec.team?.id ?? null,
         createdAt: spec.created,
-        dueAt: slaDueAt(spec.priority, spec.created),
+        ...initialTargets({ schedule: ALWAYS_OPEN, policies: resolvePolicies([]) }, spec.priority, spec.created),
         firstResponseAt: spec.assignee ? new Date(spec.created.getTime() + 3_600_000) : null,
+        // On-hold tickets were parked a couple of hours in, so their SLA clock is stopped.
+        slaPausedAt: spec.status === "ON_HOLD" ? new Date(spec.created.getTime() + 2 * 3_600_000) : null,
         resolvedAt: done && "resolved" in spec ? spec.resolved : null,
         closedAt: spec.status === "CLOSED" && "resolved" in spec ? spec.resolved : null,
         resolutionNote: done ? "Root cause fixed and confirmed with the requester." : null,

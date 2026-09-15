@@ -4,7 +4,7 @@ import type { OrganisationMember, Prisma } from "db/client";
 import { prisma } from "../lib/prisma";
 import { publicUser, publicUserSelect } from "../lib/selects";
 import { getMembership, isOrgAdmin } from "../middleware/access";
-import { OPEN_STATUSES, ticketKey } from "../domain/tickets";
+import { OPEN_STATUSES, SLA_RUNNING_STATUSES, ticketKey } from "../domain/tickets";
 import { goalWithProgress } from "./goal.controller";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -46,7 +46,7 @@ export async function overview(req: Request, res: Response) {
     prisma.team.count({ where: { organisationId: orgId } }),
     prisma.board.count({ where: boardScope }),
     prisma.ticket.count({ where: openTickets }),
-    prisma.ticket.count({ where: { ...openTickets, dueAt: { lt: now } } }),
+    prisma.ticket.count({ where: { organisationId: orgId, status: { in: SLA_RUNNING_STATUSES }, slaPausedAt: null, dueAt: { lt: now } } }),
     prisma.ticket.count({ where: { ...openTickets, assigneeId: null } }),
     prisma.ticket.count({ where: { organisationId: orgId, resolvedAt: { gte: since30 } } }),
     prisma.task.findMany({ where: { board: boardScope }, select: { completedAt: true, dueDate: true } }),

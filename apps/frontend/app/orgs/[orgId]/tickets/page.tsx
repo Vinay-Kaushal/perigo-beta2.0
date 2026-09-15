@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, ChevronLeft, ChevronRight, LifeBuoy, Plus, Search, UserX, User as UserIcon, Users, Inbox } from "lucide-react";
+import { AlertTriangle, MessageSquareWarning, PauseCircle, ChevronLeft, ChevronRight, LifeBuoy, Plus, Search, UserX, User as UserIcon, Users, Inbox } from "lucide-react";
 import { useApi, useOrg } from "@/lib/hooks";
 import type { Paginated, Priority, Ticket, TicketStats } from "@/lib/types";
 import { Page, PageHeader } from "@/components/ui/page";
@@ -23,6 +23,8 @@ const VIEWS = [
   { id: "team", label: "My teams", icon: Users, params: { status: "open", team: "mine" } },
   { id: "requested", label: "Raised by me", icon: LifeBuoy, params: { requester: "me" } },
   { id: "breached", label: "SLA breached", icon: AlertTriangle, params: { breached: "true" } },
+  { id: "response", label: "Response overdue", icon: MessageSquareWarning, params: { responseBreached: "true" } },
+  { id: "hold", label: "On hold", icon: PauseCircle, params: { status: "ON_HOLD" } },
   { id: "done", label: "Resolved & closed", icon: Inbox, params: { status: "done" } },
 ] as const;
 
@@ -74,7 +76,7 @@ function TicketsInner() {
 
   const { data, error, isLoading, isValidating, mutate } = useApi<Paginated<Ticket>>(`/organisations/${orgId}/tickets?${query}`);
   const { data: stats } = useApi<TicketStats>(`/organisations/${orgId}/tickets/stats`);
-  const counts: Record<string, number | undefined> = { open: stats?.open, mine: stats?.assignedToMe, unassigned: stats?.unassigned, breached: stats?.breached };
+  const counts: Record<string, number | undefined> = { open: stats?.open, mine: stats?.assignedToMe, unassigned: stats?.unassigned, breached: stats?.breached, response: stats?.responseBreached, hold: stats?.paused };
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
   const done = (t: Ticket) => ["RESOLVED", "CLOSED", "CANCELLED"].includes(t.status);
 
@@ -104,7 +106,7 @@ function TicketsInner() {
             >
               <v.icon size={15} className={view.id === v.id ? "text-accent" : "text-ink-faint"} />
               <span className="flex-1 text-left">{v.label}</span>
-              {counts[v.id] !== undefined && <span className={cn("tabular text-2xs", v.id === "breached" && counts[v.id] ? "font-semibold text-danger" : "text-ink-faint")}>{counts[v.id]}</span>}
+              {counts[v.id] !== undefined && <span className={cn("tabular text-2xs", (v.id === "breached" || v.id === "response") && counts[v.id] ? "font-semibold text-danger" : "text-ink-faint")}>{counts[v.id]}</span>}
             </button>
           ))}
         </nav>
@@ -199,7 +201,7 @@ function TicketsInner() {
                         )}
                       </td>
                       <td className="px-3 py-2.5">
-                        <SlaLabel dueAt={t.dueAt} breached={t.slaBreached} done={done(t)} />
+                        <SlaLabel dueAt={t.dueAt} breached={t.slaBreached} paused={t.slaPaused} done={done(t)} />
                       </td>
                       <td className="whitespace-nowrap px-4 py-2.5 text-right text-xs text-ink-faint">{relativeTime(t.updatedAt)}</td>
                     </tr>

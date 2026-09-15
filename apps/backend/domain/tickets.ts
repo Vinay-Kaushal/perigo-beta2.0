@@ -2,7 +2,7 @@ import type { OrganisationRole, TaskPriority, TicketStatus } from "db/client";
 
 const HOUR = 60 * 60 * 1000;
 
-/** Resolution SLA per priority, in hours. */
+/** Default resolution SLA per priority, in hours (24/7). Orgs can override targets and use business hours; see domain/sla.ts. */
 export const SLA_HOURS: Record<TaskPriority, number> = {
   URGENT: 4,
   HIGH: 24,
@@ -16,13 +16,32 @@ export function slaDueAt(priority: TaskPriority, from: Date): Date {
 
 export const OPEN_STATUSES: TicketStatus[] = ["NEW", "OPEN", "IN_PROGRESS", "ON_HOLD"];
 export const DONE_STATUSES: TicketStatus[] = ["RESOLVED", "CLOSED", "CANCELLED"];
+/** Open statuses whose SLA clock is running (ON_HOLD pauses it). */
+export const SLA_RUNNING_STATUSES: TicketStatus[] = ["NEW", "OPEN", "IN_PROGRESS"];
 
 export function isOpenStatus(status: TicketStatus) {
   return OPEN_STATUSES.includes(status);
 }
 
-export function isSlaBreached(ticket: { status: TicketStatus; dueAt: Date | null }, now = new Date()) {
-  return isOpenStatus(ticket.status) && !!ticket.dueAt && ticket.dueAt.getTime() < now.getTime();
+type SlaTicket = { status: TicketStatus; dueAt: Date | null; slaPausedAt?: Date | null };
+
+/** Past its resolution target while the clock is running. Paused (on hold) tickets never breach. */
+export function isSlaBreached(ticket: SlaTicket, now = new Date()) {
+  return SLA_RUNNING_STATUSES.includes(ticket.status) && !ticket.slaPausedAt && !!ticket.dueAt && ticket.dueAt.getTime() < now.getTime();
+}
+
+/** No first response yet and past the response target while the clock is running. */
+export function isResponseBreached(
+  ticket: SlaTicket & { responseDueAt?: Date | null; firstResponseAt?: Date | null },
+  now = new Date()
+) {
+  return (
+    SLA_RUNNING_STATUSES.includes(ticket.status) &&
+    !ticket.slaPausedAt &&
+    !ticket.firstResponseAt &&
+    !!ticket.responseDueAt &&
+    ticket.responseDueAt.getTime() < now.getTime()
+  );
 }
 
 /** The workflow. Anything not listed here is rejected. */

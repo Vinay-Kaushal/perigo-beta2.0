@@ -18,6 +18,7 @@ import * as analytics from "../controllers/analytics.controller";
 import * as dashboard from "../controllers/dashboard.controller";
 import * as notifications from "../controllers/notification.controller";
 import * as attachments from "../controllers/attachment.controller";
+import * as sla from "../controllers/sla.controller";
 
 const ADMIN = ["OWNER", "ADMIN"] as const;
 const uploadLimiter = rateLimit({ name: "upload", windowSec: 60, max: () => 60, key: (req) => req.user!.id });
@@ -82,6 +83,11 @@ org.get("/", h(orgs.getOrganisation));
 org.patch("/", requireOrgRole(...ADMIN), h(orgs.updateOrganisation));
 org.delete("/", requireOrgRole("OWNER"), h(orgs.deleteOrganisation));
 org.get("/audit-logs", requireOrgRole(...ADMIN), h(orgs.listAuditLogs));
+
+org.get("/sla", h(sla.getSla));
+org.put("/sla", requireOrgRole(...ADMIN), h(sla.updateSla));
+org.post("/sla/holidays", requireOrgRole(...ADMIN), h(sla.addHoliday));
+org.delete("/sla/holidays/:holidayId", requireOrgRole(...ADMIN), h(sla.deleteHoliday));
 
 org.get("/members", h(orgs.listMembers));
 org.delete("/members/me", h(orgs.leaveOrganisation));

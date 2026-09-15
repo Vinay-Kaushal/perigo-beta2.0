@@ -3,7 +3,7 @@ import { prisma } from "../lib/prisma";
 import { publicUser } from "../lib/selects";
 import { currentUser } from "../middleware/auth";
 import { isOrgAdmin } from "../middleware/access";
-import { OPEN_STATUSES, isSlaBreached, ticketKey } from "../domain/tickets";
+import { OPEN_STATUSES, isResponseBreached, isSlaBreached, ticketKey } from "../domain/tickets";
 import { goalWithProgress } from "./goal.controller";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -114,7 +114,7 @@ export async function myDashboard(req: Request, res: Response) {
     tickets: {
       assignedOpen: assignedTickets.length,
       breached: assignedTickets.filter((t) => isSlaBreached(t, now)).length,
-      dueSoon: assignedTickets.filter((t) => t.dueAt && t.dueAt >= now && t.dueAt <= in24h).length,
+      dueSoon: assignedTickets.filter((t) => !t.slaPausedAt && t.dueAt && t.dueAt >= now && t.dueAt <= in24h).length,
       requestedOpen,
     },
     myTickets: sortedTickets.slice(0, 8).map((t) => {
@@ -128,6 +128,8 @@ export async function myDashboard(req: Request, res: Response) {
         priority: t.priority,
         dueAt: t.dueAt,
         slaBreached: isSlaBreached(t, now),
+        responseBreached: isResponseBreached(t, now),
+        slaPaused: !!t.slaPausedAt,
         requester: t.requester,
         organisation: { id: org.id, name: org.name },
       };
