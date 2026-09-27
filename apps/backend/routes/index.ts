@@ -24,6 +24,7 @@ import * as sso from "../controllers/sso.controller";
 import * as security from "../controllers/orgSecurity.controller";
 
 const ADMIN = ["OWNER", "ADMIN"] as const;
+const exportLimiter = rateLimit({ name: "export", windowSec: 60, max: () => 10, key: (req) => req.user!.id });
 const uploadLimiter = rateLimit({ name: "upload", windowSec: 60, max: () => 60, key: (req) => req.user!.id });
 
 // ---------------------------------------------------------------- public (no token)
@@ -135,6 +136,7 @@ org.delete("/teams/:teamId/members/:userId", requireOrgRole(...ADMIN), h(teams.r
 org.get("/tickets", h(tickets.listTickets));
 org.post("/tickets", h(tickets.createTicket));
 org.get("/tickets/stats", h(tickets.ticketStats));
+org.get("/tickets/export.csv", exportLimiter, h(tickets.exportTickets));
 org.get("/tickets/:ticketRef", h(tickets.getTicket));
 org.patch("/tickets/:ticketRef", h(tickets.updateTicket));
 org.delete("/tickets/:ticketRef", requireOrgRole(...ADMIN), h(tickets.deleteTicket));

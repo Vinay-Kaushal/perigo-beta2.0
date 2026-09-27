@@ -3,8 +3,10 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, MessageSquareWarning, PauseCircle, ChevronLeft, ChevronRight, LifeBuoy, Plus, Search, UserX, User as UserIcon, Users, Inbox } from "lucide-react";
+import { AlertTriangle, Download, MessageSquareWarning, PauseCircle, ChevronLeft, ChevronRight, LifeBuoy, Plus, Search, UserX, User as UserIcon, Users, Inbox } from "lucide-react";
 import { useApi, useOrg } from "@/lib/hooks";
+import { downloadFile, errorMessage } from "@/lib/api";
+import { toast } from "sonner";
 import type { Paginated, Priority, Ticket, TicketStats } from "@/lib/types";
 import { Page, PageHeader } from "@/components/ui/page";
 import { Card } from "@/components/ui/card";
@@ -41,6 +43,10 @@ function TicketsInner() {
   const priority = params.get("priority") ?? "";
   const type = params.get("type") ?? "";
   const sort = params.get("sort") ?? "updatedAt";
+  const from = params.get("from") ?? "";
+  const to = params.get("to") ?? "";
+  const dateField = params.get("dateField") ?? "created";
+  const [exporting, setExporting] = useState(false);
   const [q, setQ] = useState(params.get("q") ?? "");
 
   useEffect(() => {
@@ -66,13 +72,25 @@ function TicketsInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
 
-  const query = useMemo(() => {
-    const s = new URLSearchParams({ ...view.params, page: String(page), pageSize: "25", sort, order: sort === "dueAt" ? "asc" : "desc" });
-    if (priority) s.set("priority", priority);
-    if (type) s.set("type", type);
-    if (params.get("q")) s.set("q", params.get("q")!);
+  // Shared by the queue and its CSV export, so the file always matches what's on screen.
+  const filters = useMemo(() => {
+    const s = new URLSearchParams({ ...view.params, sort, order: sort === "dueAt" ? "asc" : "desc" });
+    for (const [k, v] of Object.entries({ priority, type, from, to, q: params.get("q") })) if (v) s.set(k, v);
+    if (from || to) s.set("dateField", dateField);
     return s.toString();
-  }, [view, page, priority, type, sort, params]);
+  }, [view, priority, type, sort, from, to, dateField, params]);
+  const query = `${filters}&page=${page}&pageSize=25`;
+
+  async function exportCsv() {
+    setExporting(true);
+    try {
+      await downloadFile(`/organisations/${orgId}/tickets/export.csv?${filters}`, `${org?.slug ?? "tickets"}-tickets${from || to ? `-${from || "start"}_${to || "today"}` : ""}.csv`);
+    } catch (err) {
+      toast.error(errorMessage(err, "Export failed"));
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const { data, error, isLoading, isValidating, mutate } = useApi<Paginated<Ticket>>(`/organisations/${orgId}/tickets?${query}`);
   const { data: stats } = useApi<TicketStats>(`/organisations/${orgId}/tickets/stats`);
@@ -87,9 +105,14 @@ function TicketsInner() {
         title="Service desk"
         description="Track incidents and requests from report to resolution."
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus size={15} /> New ticket
-          </Button>
+          <>
+            <Button variant="secondary" onClick={exportCsv} disabled={exporting}>
+              <Download size={14} /> {exporting ? "Exporting…" : "Export CSV"}
+            </Button>
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus size={15} /> New ticket
+            </Button>
+          </>
         }
       />
 
@@ -139,6 +162,14 @@ function TicketsInner() {
               <option value="priority">Priority</option>
               <option value="dueAt">SLA due soonest</option>
             </Select>
+            <Select aria-label="Date field" value={dateField} onChange={(e) => update({ dateField: e.target.value === "created" ? null : e.target.value })} className="w-auto">
+              <option value="created">Created</option>
+              <option value="updated">Updated</option>
+              <option value="resolved">Resolved</option>
+              <option value="due">Due</option>
+            </Select>
+            <Input type="date" aria-label="From date" value={from} max={to || undefined} onChange={(e) => update({ from: e.target.value || null })} className="w-auto" />
+            <Input type="date" aria-label="To date" value={to} min={from || undefined} onChange={(e) => update({ to: e.target.value || null })} className="w-auto" />
           </div>
 
           {error && <ErrorState message="Couldn't load tickets." onRetry={() => mutate()} />}

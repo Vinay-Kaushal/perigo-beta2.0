@@ -18,6 +18,7 @@ Object.assign(process.env, {
   UPLOAD_DIR: mkdtempSync(path.join(tmpdir(), "perigo-uploads-")),
   ATTACHMENT_MAX_BYTES: String(64 * 1024),
   ATTACHMENTS_PER_TICKET_MAX: "5",
+  EXPORT_MAX_ROWS: "1200",
   EMAIL_BATCH_WINDOW_SEC: "0",
   EMAIL_WORKER: "off",
   API_PUBLIC_URL: "http://localhost:4000",

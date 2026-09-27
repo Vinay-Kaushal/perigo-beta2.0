@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { Prisma } from "db/client";
 import { ZodError } from "zod";
 import { HttpError } from "../lib/http";
+import { DateRangeError } from "../domain/dateRange";
 
 export function notFoundHandler(_req: Request, res: Response) {
   res.status(404).json({ error: "Route not found", code: "NOT_FOUND" });
@@ -10,6 +11,10 @@ export function notFoundHandler(_req: Request, res: Response) {
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction) {
   if (err instanceof HttpError) {
     return res.status(err.status).json({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) });
+  }
+
+  if (err instanceof DateRangeError) {
+    return res.status(400).json({ error: err.message, code: "INVALID_DATE_RANGE" });
   }
 
   if (err instanceof ZodError) {

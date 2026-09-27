@@ -14,6 +14,10 @@ import { deleteObjects } from "../lib/storage";
 import { attachmentInclude, serialiseAttachment } from "./attachment.controller";
 import { loadSlaContext } from "../services/sla";
 import { initialTargets, resume, retarget } from "../domain/sla";
+import { formatLocalDateTime, rangeFilter, resolveDateRange } from "../domain/dateRange";
+import { streamCsv } from "../lib/csv";
+import { env } from "../lib/env";
+import { assertExportSize, exportFilters, inIdBatches, mapBatches } from "../services/exports";
 import {
   DONE_STATUSES,
   OPEN_STATUSES,
@@ -271,7 +275,7 @@ const csv = <T extends readonly [string, ...string[]]>(values: T) =>
     .pipe(z.array(z.enum(values)))
     .optional();
 
-const listQuerySchema = z.object({
+const filterQuerySchema = z.object({
   status: z.union([z.literal("open"), z.literal("done")]).or(z.string()).optional(),
   priority: csv(PRIORITIES),
   type: csv(TYPES),
@@ -281,11 +285,20 @@ const listQuerySchema = z.object({
   breached: z.enum(["true", "false"]).optional(),
   responseBreached: z.enum(["true", "false"]).optional(),
   q: z.string().trim().max(200).optional(),
+  // Calendar days in the org's timezone (inclusive), applied to `dateField`.
+  from: z.string().max(40).optional(),
+  to: z.string().max(40).optional(),
+  dateField: z.enum(["created", "updated", "resolved", "due"]).default("created"),
   sort: z.enum(["createdAt", "updatedAt", "priority", "dueAt", "number"]).default("updatedAt"),
   order: z.enum(["asc", "desc"]).default("desc"),
+});
+
+const listQuerySchema = filterQuerySchema.extend({
   page: z.coerce.number().int().min(1).max(10_000).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
 });
+
+const DATE_FIELD = { created: "createdAt", updated: "updatedAt", resolved: "resolvedAt", due: "dueAt" } as const;
 
 function parseStatusFilter(raw: string | undefined): TicketStatus[] | undefined {
   if (!raw) return undefined;
@@ -296,23 +309,19 @@ function parseStatusFilter(raw: string | undefined): TicketStatus[] | undefined 
   return parsed.data;
 }
 
-export async function listTickets(req: Request, res: Response) {
-  const user = currentUser(req);
-  const membership = getMembership(req);
-  const orgId = membership.organisationId;
-  const q = listQuerySchema.parse(req.query);
+/** The same filters drive the queue, its CSV export and anything else that lists tickets. */
+function ticketFilters(q: z.infer<typeof filterQuerySchema>, ctx: { userId: string; orgId: string; timezone: string }) {
   const statuses = parseStatusFilter(q.status);
-
-  const and: Prisma.TicketWhereInput[] = [{ organisationId: orgId }];
+  const and: Prisma.TicketWhereInput[] = [{ organisationId: ctx.orgId }];
   if (statuses) and.push({ status: { in: statuses } });
   if (q.priority?.length) and.push({ priority: { in: q.priority } });
   if (q.type?.length) and.push({ type: { in: q.type } });
-  if (q.assignee === "me") and.push({ assigneeId: user.id });
+  if (q.assignee === "me") and.push({ assigneeId: ctx.userId });
   else if (q.assignee === "unassigned") and.push({ assigneeId: null });
   else if (q.assignee) and.push({ assigneeId: q.assignee });
-  if (q.requester) and.push({ requesterId: q.requester === "me" ? user.id : q.requester });
+  if (q.requester) and.push({ requesterId: q.requester === "me" ? ctx.userId : q.requester });
   if (q.team === "mine") {
-    and.push({ team: { members: { some: { organisationMember: { userId: user.id } } } } });
+    and.push({ team: { members: { some: { organisationMember: { userId: ctx.userId } } } } });
   } else if (q.team) {
     and.push({ teamId: q.team });
   }
@@ -321,6 +330,8 @@ export async function listTickets(req: Request, res: Response) {
   if (q.responseBreached === "true") {
     and.push({ status: { in: SLA_RUNNING_STATUSES }, slaPausedAt: null, firstResponseAt: null, responseDueAt: { lt: new Date() } });
   }
+  const dates = rangeFilter(resolveDateRange({ from: q.from, to: q.to }, ctx.timezone, { maxDays: 366 * 5 }));
+  if (dates) and.push({ [DATE_FIELD[q.dateField]]: dates });
   if (q.q) {
     const numberMatch = q.q.match(/^(?:[A-Za-z]{2,6}-)?(\d{1,9})$/);
     and.push({
@@ -336,19 +347,109 @@ export async function listTickets(req: Request, res: Response) {
     q.sort === "dueAt" ? { dueAt: { sort: q.order, nulls: "last" } } : { [q.sort]: q.order },
     { number: "desc" },
   ];
+  return { where, orderBy };
+}
 
-  const [total, items, prefix] = await Promise.all([
+const orgListContext = (orgId: string) =>
+  prisma.organisation.findUniqueOrThrow({ where: { id: orgId }, select: { ticketPrefix: true, timezone: true, slug: true } });
+
+export async function listTickets(req: Request, res: Response) {
+  const user = currentUser(req);
+  const orgId = getMembership(req).organisationId;
+  const q = listQuerySchema.parse(req.query);
+  const org = await orgListContext(orgId);
+  const { where, orderBy } = ticketFilters(q, { userId: user.id, orgId, timezone: org.timezone });
+
+  const [total, items] = await Promise.all([
     prisma.ticket.count({ where }),
     prisma.ticket.findMany({ where, include: listInclude, orderBy, skip: (q.page - 1) * q.pageSize, take: q.pageSize }),
-    orgPrefix(orgId),
   ]);
 
   res.json({
-    items: items.map((t: ListTicket) => serialise(t, prefix)),
+    items: items.map((t: ListTicket) => serialise(t, org.ticketPrefix)),
     total,
     page: q.page,
     pageSize: q.pageSize,
   });
+}
+
+const TICKET_CSV_COLUMNS = (tz: string) => [
+  "Key",
+  "Title",
+  "Type",
+  "Status",
+  "Priority",
+  "Category",
+  "Requester",
+  "Requester email",
+  "Assignee",
+  "Assignee email",
+  "Team",
+  `Created (${tz})`,
+  `First response (${tz})`,
+  `Response due (${tz})`,
+  `Due (${tz})`,
+  `Resolved (${tz})`,
+  `Closed (${tz})`,
+  "SLA breached",
+  "Response SLA breached",
+  "SLA paused",
+  "Comments",
+];
+
+const TYPE_LABEL: Record<(typeof TYPES)[number], string> = {
+  INCIDENT: "Incident",
+  SERVICE_REQUEST: "Service request",
+  PROBLEM: "Problem",
+  CHANGE: "Change",
+  QUESTION: "Question",
+};
+
+/** GET …/tickets/export.csv — the queue's current filters, every matching row. */
+export async function exportTickets(req: Request, res: Response) {
+  const user = currentUser(req);
+  const orgId = getMembership(req).organisationId;
+  const q = filterQuerySchema.parse(req.query);
+  const org = await orgListContext(orgId);
+  const { where, orderBy } = ticketFilters(q, { userId: user.id, orgId, timezone: org.timezone });
+
+  const ids = (await prisma.ticket.findMany({ where, orderBy, select: { id: true }, take: env().EXPORT_MAX_ROWS + 1 })).map((t) => t.id);
+  assertExportSize(ids.length);
+  // Audited before streaming, so an interrupted export still leaves a trace.
+  await audit(req, { organisationId: orgId, action: "export.tickets", metadata: { rows: ids.length, filters: exportFilters(req.query) } });
+
+  const tz = org.timezone;
+  const when = (d: Date | null) => formatLocalDateTime(d, tz);
+  const now = new Date();
+  const batches = mapBatches(
+    inIdBatches(ids, (chunk) => prisma.ticket.findMany({ where: { id: { in: chunk }, organisationId: orgId }, include: listInclude })),
+    (t: ListTicket) => [
+      ticketKey(org.ticketPrefix, t.number),
+      t.title,
+      TYPE_LABEL[t.type],
+      STATUS_LABEL[t.status],
+      t.priority.charAt(0) + t.priority.slice(1).toLowerCase(),
+      t.category,
+      t.requester.name,
+      t.requester.email,
+      t.assignee?.name,
+      t.assignee?.email,
+      t.team?.name,
+      when(t.createdAt),
+      when(t.firstResponseAt),
+      when(t.responseDueAt),
+      when(t.dueAt),
+      when(t.resolvedAt),
+      when(t.closedAt),
+      isSlaBreached(t, now),
+      isResponseBreached(t, now),
+      !!t.slaPausedAt,
+      t._count.comments,
+    ]
+  );
+
+  const rangeLabel = q.from || q.to ? `-${q.from ?? "start"}_${q.to ?? "today"}` : "";
+  await streamCsv(res, { filename: `${org.slug}-tickets${rangeLabel}.csv`, header: TICKET_CSV_COLUMNS(tz), batches });
 }
 
 // ---------------------------------------------------------------- detail

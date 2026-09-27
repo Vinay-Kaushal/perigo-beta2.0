@@ -65,7 +65,7 @@ export async function request<T = any>(
     ...(opts.redirect ? { redirect: opts.redirect } : {}),
   });
   const contentType = res.headers.get("content-type") ?? "";
-  const binary = contentType.includes("application/pdf") || contentType.startsWith("image/") || !!res.headers.get("content-disposition");
+  const binary = !contentType.startsWith("text/csv") && (contentType.includes("application/pdf") || contentType.startsWith("image/") || !!res.headers.get("content-disposition"));
   const text = binary ? "" : await res.text();
   let body: any = text;
   try {

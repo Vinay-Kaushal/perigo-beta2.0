@@ -44,6 +44,8 @@ const envSchema = z.object({
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10), // per IP+email / 15 min
   RATE_LIMIT_SIGNUP_MAX: z.coerce.number().int().positive().default(20), // per IP / hour
   RATE_LIMIT_TOKEN_MAX: z.coerce.number().int().positive().default(30), // invite/verification lookups per IP / minute
+  // CSV exports refuse (rather than truncate) beyond this many rows.
+  EXPORT_MAX_ROWS: z.coerce.number().int().positive().default(50_000),
   // 32-byte key (64 hex chars or base64) encrypting 2FA secrets and SSO client secrets at rest. Required in
   // production; development and tests derive one from JWT_SECRET. Changing it makes stored secrets unreadable.
   DATA_ENCRYPTION_KEY: z.string().optional(),
